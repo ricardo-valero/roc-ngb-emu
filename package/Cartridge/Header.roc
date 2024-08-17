@@ -1,44 +1,59 @@
-module [header]
+module [read]
 
-Type := [RomOnly, MBC1, MBC1Ram, MBC1RamBattery, MBC2, MBC2Battery, RomRam, RomRamBattery, MMM01, MMM01Ram, MMM01RamBattery, MBC3TimerBattery, MBC3TimerRamBattery, MBC3, MBC3Ram, MBC3RamBattery, MBC5, MBC5Ram, MBC5RamBattery, MBC5Rumble, MBC5RumbleRam, MBC5RumbleRamBattery, MBC6, MBC7SensorRumbleRamBattery, PocketCamera, BandaiTama5, HuC3, HuC1RamBattery, Unknown] implements [Inspect]
+# https://gbdev.io/pandocs/The_Cartridge_Header.html
+
+Feature : [Ram, Battery, Timer, Rumble, Sensor]
+Type := [
+    Rom (List Feature),
+    Mbc1 (List Feature),
+    Mbc2 (List Feature),
+    Mbc3 (List Feature),
+    Mbc5 (List Feature),
+    Mbc6 (List Feature),
+    Mbc7 (List Feature),
+    Mmm01 (List Feature),
+    Special [PocketCamera, BandaiTama5, HuC3, HuC1 (List Feature)],
+    Unknown,
+]
+    implements [Inspect]
 
 mapType : List U8 -> Type
 mapType = \bytes ->
     @Type
         (
             when bytes is
-                [0x00] -> RomOnly
-                [0x01] -> MBC1
-                [0x02] -> MBC1Ram
-                [0x03] -> MBC1RamBattery
-                [0x05] -> MBC2
-                [0x06] -> MBC2Battery
-                [0x08] -> RomRam
-                [0x09] -> RomRamBattery
-                [0x0B] -> MMM01
-                [0x0C] -> MMM01Ram
-                [0x0D] -> MMM01RamBattery
-                [0x0F] -> MBC3TimerBattery
-                [0x10] -> MBC3TimerRamBattery
-                [0x11] -> MBC3
-                [0x12] -> MBC3Ram
-                [0x13] -> MBC3RamBattery
-                [0x19] -> MBC5
-                [0x1A] -> MBC5Ram
-                [0x1B] -> MBC5RamBattery
-                [0x1C] -> MBC5Rumble
-                [0x1D] -> MBC5RumbleRam
-                [0x1E] -> MBC5RumbleRamBattery
-                [0x20] -> MBC6
-                [0x22] -> MBC7SensorRumbleRamBattery
-                [0xFC] -> PocketCamera
-                [0xFD] -> BandaiTama5
-                [0xFE] -> HuC3
-                [0xFF] -> HuC1RamBattery
+                [0x00] -> Rom []
+                [0x01] -> Mbc1 []
+                [0x02] -> Mbc1 [Ram]
+                [0x03] -> Mbc1 [Ram, Battery]
+                [0x05] -> Mbc2 []
+                [0x06] -> Mbc2 [Battery]
+                [0x08] -> Rom [Ram]
+                [0x09] -> Rom [Ram, Battery]
+                [0x0B] -> Mmm01 []
+                [0x0C] -> Mmm01 [Ram]
+                [0x0D] -> Mmm01 [Ram, Battery]
+                [0x0F] -> Mbc3 [Timer, Battery]
+                [0x10] -> Mbc3 [Timer, Ram, Battery]
+                [0x11] -> Mbc3 []
+                [0x12] -> Mbc3 [Ram]
+                [0x13] -> Mbc3 [Ram, Battery]
+                [0x19] -> Mbc5 []
+                [0x1A] -> Mbc5 [Ram]
+                [0x1B] -> Mbc5 [Ram, Battery]
+                [0x1C] -> Mbc5 [Rumble]
+                [0x1D] -> Mbc5 [Rumble, Ram]
+                [0x1E] -> Mbc5 [Rumble, Ram, Battery]
+                [0x20] -> Mbc6 []
+                [0x22] -> Mbc7 [Sensor, Rumble, Ram, Battery]
+                [0xFC] -> Special PocketCamera
+                [0xFD] -> Special BandaiTama5
+                [0xFE] -> Special HuC3
+                [0xFF] -> Special (HuC1 [Ram, Battery])
                 _ -> Unknown
         )
 
-OldLicensee := [NewLicensee, None, Some Str, Unknown] implements [Inspect]
+OldLicensee := [None, Some Str, NewLicensee, Unknown] implements [Inspect]
 
 mapOldLicensee : List U8 -> OldLicensee
 mapOldLicensee = \bytes ->
@@ -72,7 +87,7 @@ mapOldLicensee = \bytes ->
                 [0x39] -> Some "Banpresto"
                 [0x3C] -> Some ".Entertainment i"
                 [0x3E] -> Some "Gremlin"
-                [0x41] -> Some "Ubi Soft1"
+                [0x41] -> Some "Ubi Soft"
                 [0x42] -> Some "Atlus"
                 [0x44] -> Some "Malibu Interactive"
                 [0x46] -> Some "Angel"
@@ -169,7 +184,7 @@ mapOldLicensee = \bytes ->
                 [0xD2] -> Some "Quest"
                 [0xD3] -> Some "Sigma Enterprises"
                 [0xD4] -> Some "ASK Kodansha Co."
-                [0xD6] -> Some "Naxat Soft13"
+                [0xD6] -> Some "Naxat Soft"
                 [0xD7] -> Some "Copya System"
                 [0xD9] -> Some "Banpresto"
                 [0xDA] -> Some "Tomy"
@@ -197,7 +212,7 @@ mapOldLicensee = \bytes ->
 
 NewLicensee := [None, Some Str, Unknown] implements [Inspect]
 
-# mapNewLicensee : List U8 -> NewLicensee
+mapNewLicensee : List U8 -> NewLicensee
 mapNewLicensee = \bytes ->
     str = Str.fromUtf8 bytes
     @NewLicensee
@@ -224,11 +239,11 @@ mapNewLicensee = \bytes ->
                 Ok "37" -> Some "Taito"
                 Ok "38" -> Some "Hudson Soft"
                 Ok "39" -> Some "Banpresto"
-                Ok "41" -> Some "Ubi Soft1"
+                Ok "41" -> Some "Ubi Soft"
                 Ok "42" -> Some "Atlus"
                 Ok "44" -> Some "Malibu Interactive"
                 Ok "46" -> Some "Angel"
-                Ok "47" -> Some "Bullet-Proof Software2"
+                Ok "47" -> Some "Bullet-Proof Software"
                 Ok "49" -> Some "Irem"
                 Ok "50" -> Some "Absolute"
                 Ok "51" -> Some "Acclaim Entertainment"
@@ -241,26 +256,26 @@ mapNewLicensee = \bytes ->
                 Ok "58" -> Some "Mattel"
                 Ok "59" -> Some "Milton Bradley Company"
                 Ok "60" -> Some "Titus Interactive"
-                Ok "61" -> Some "Virgin Games Ltd.3"
+                Ok "61" -> Some "Virgin Games Ltd."
                 Ok "64" -> Some "Lucasfilm Games4"
                 Ok "67" -> Some "Ocean Software"
                 Ok "69" -> Some "EA (Electronic Arts)"
-                Ok "70" -> Some "Infogrames5"
+                Ok "70" -> Some "Infogrames"
                 Ok "71" -> Some "Interplay Entertainment"
                 Ok "72" -> Some "Broderbund"
-                Ok "73" -> Some "Sculptured Software6"
-                Ok "75" -> Some "The Sales Curve Limited7"
+                Ok "73" -> Some "Sculptured Software"
+                Ok "75" -> Some "The Sales Curve Limited"
                 Ok "78" -> Some "THQ"
                 Ok "79" -> Some "Accolade"
                 Ok "80" -> Some "Misawa Entertainment"
                 Ok "83" -> Some "lozc"
                 Ok "86" -> Some "Tokuma Shoten"
                 Ok "87" -> Some "Tsukuda Original"
-                Ok "91" -> Some "Chunsoft Co.8"
+                Ok "91" -> Some "Chunsoft Co."
                 Ok "92" -> Some "Video System"
                 Ok "93" -> Some "Ocean Software/Acclaim Entertainment"
                 Ok "95" -> Some "Varie"
-                Ok "96" -> Some "Yonezawa/s’pal"
+                Ok "96" -> Some "Yonezawa/S’pal"
                 Ok "97" -> Some "Kaneko"
                 Ok "99" -> Some "Pack-In-Video"
                 Ok "9H" -> Some "Bottom Up"
@@ -272,33 +287,33 @@ mapNewLicensee = \bytes ->
 
 Size := [KiB U16, MiB U16, Unknown] implements [Inspect]
 
-mapRamSize : U8 -> Size
-mapRamSize = \byte ->
+mapRamSize : List U8 -> Size
+mapRamSize = \bytes ->
     @Size
         (
-            when byte is
-                0x00 -> KiB 0
-                0x02 -> KiB 8
-                0x03 -> KiB 32
-                0x04 -> KiB 128
-                0x05 -> KiB 64
+            when bytes is
+                [0x00] -> KiB 0
+                [0x02] -> KiB 8
+                [0x03] -> KiB 32
+                [0x04] -> KiB 128
+                [0x05] -> KiB 64
                 _ -> Unknown
         )
 
-mapRomSize : U8 -> Size
-mapRomSize = \byte ->
+mapRomSize : List U8 -> Size
+mapRomSize = \bytes ->
     @Size
         (
-            when byte is
-                0x00 -> KiB 32
-                0x01 -> KiB 64
-                0x02 -> KiB 128
-                0x03 -> KiB 256
-                0x04 -> KiB 512
-                0x05 -> MiB 1
-                0x06 -> MiB 2
-                0x07 -> MiB 4
-                0x08 -> MiB 8
+            when bytes is
+                [0x00] -> KiB 32
+                [0x01] -> KiB 64
+                [0x02] -> KiB 128
+                [0x03] -> KiB 256
+                [0x04] -> KiB 512
+                [0x05] -> MiB 1
+                [0x06] -> MiB 2
+                [0x07] -> MiB 4
+                [0x08] -> MiB 8
                 _ -> Unknown
         )
 
@@ -316,7 +331,43 @@ mapChecksum = \value, data ->
         EQ -> Ok (ValidChecksum actual)
         _ -> Err (InvalidChecksum actual)
 
-Props : [Checksum, NewLicensee, OldLicensee, RamSize, RomSize, Title, Type, Version, Destination]
+mapDestination = \bytes ->
+    when bytes is
+        [0x00] -> Some "Japan (and possibly overseas)"
+        [0x01] -> Some "Overseas only"
+        _ -> Unknown
+
+# In older cartridges this byte was part of the Title (see above). The CGB and later models interpret this byte to decide whether to enable Color mode (“CGB Mode”) or to fall back to monochrome compatibility mode (“Non-CGB Mode”).
+mapCgbFlag : List U8 -> Bool
+mapCgbFlag = \bytes ->
+    when bytes is
+        [0x80] -> Bool.true # The game supports CGB enhancements, but is backwards compatible with monochrome Game Boys
+        [0xC0] -> Bool.true # The game works on CGB only (the hardware ignores bit 6, so this really functions the same as $80)
+        _ -> Bool.false
+
+# This byte specifies whether the game supports SGB functions. The SGB will ignore any command packets if this byte is set to a value other than $03 (typically $00).
+mapSgbFlag : List U8 -> Bool
+mapSgbFlag = \bytes ->
+    when bytes is
+        [0x03] -> Bool.true
+        _ -> Bool.false
+
+Props : [
+    Entry,
+    Logo,
+    Title,
+    Manufacturer,
+    CgbFlag,
+    NewLicensee,
+    SgbFlag,
+    Type,
+    RamSize,
+    RomSize,
+    Destination,
+    OldLicensee,
+    Version,
+    Checksum,
+]
 
 getHeaderProp : List U8, Props -> List U8
 getHeaderProp = \data, prop ->
@@ -324,8 +375,13 @@ getHeaderProp = \data, prop ->
     |> List.sublist
         (
             when prop is
-                Title -> { start: 0x0134, len: 15 }
+                Entry -> { start: 0x0100, len: 4 }
+                Logo -> { start: 0x0104, len: 30 }
+                Title -> { start: 0x0134, len: 16 }
+                Manufacturer -> { start: 0x013F, len: 4 }
+                CgbFlag -> { start: 0x0143, len: 1 }
                 NewLicensee -> { start: 0x0144, len: 2 }
+                SgbFlag -> { start: 0x0146, len: 1 }
                 Type -> { start: 0x0147, len: 1 }
                 RomSize -> { start: 0x0148, len: 1 }
                 RamSize -> { start: 0x0149, len: 1 }
@@ -335,19 +391,16 @@ getHeaderProp = \data, prop ->
                 Checksum -> { start: 0x014D, len: 1 }
         )
 
-getSingle = \list -> List.get list 0
-
-mapDestination = \bytes ->
-    when bytes is
-        [0x00] -> Some "Japan (and possibly overseas)"
-        [0x01] -> Some "Overseas only"
-        _ -> Unknown
-
-header = \data -> {
+read = \data -> {
+    entry: getHeaderProp data Entry,
+    logo: getHeaderProp data Logo,
     title: getHeaderProp data Title |> Str.fromUtf8,
+    manufacturer: getHeaderProp data Manufacturer |> Str.fromUtf8,
+    cgbFlag: getHeaderProp data CgbFlag |> mapCgbFlag,
+    sgbFlag: getHeaderProp data SgbFlag |> mapSgbFlag,
     type: getHeaderProp data Type |> mapType,
-    romSize: getHeaderProp data RomSize |> getSingle |> (\x -> Result.map x mapRomSize),
-    ramSize: getHeaderProp data RamSize |> getSingle |> (\x -> Result.map x mapRamSize),
+    romSize: getHeaderProp data RomSize |> mapRomSize,
+    ramSize: getHeaderProp data RamSize |> mapRamSize,
     oldLicensee: getHeaderProp data OldLicensee |> mapOldLicensee,
     newlicensee: getHeaderProp data NewLicensee |> mapNewLicensee,
     version: getHeaderProp data Version,

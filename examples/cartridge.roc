@@ -1,13 +1,13 @@
 app [main] {
     cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.13.0/nW9yMRtZuCYf1Oa9vbE5XoirMwzLbtoSgv7NGhUlqYA.tar.br",
-    emu: "../package/main.roc",
+    ngb: "../package/main.roc",
 }
 
 import cli.Stdout
 import cli.Path
 import cli.Arg
 import cli.Task exposing [Task]
-import emu.Cartridge
+import ngb.Cartridge.Header
 
 readArgFilePath : Task.Task Path.Path _
 readArgFilePath =
@@ -20,7 +20,7 @@ main = run |> Task.onErr \err -> crash "ERROR: $(Inspect.toStr err)"
 
 run =
     romPath = readArgFilePath!
-    # romPath = Path.withExtension path "gb"
+    # romPath2 = Path.withExtension romPath "gb" # or gbc
     isFile = Path.isFile! romPath
     cart = cartLoad! romPath
     if isFile then
@@ -31,4 +31,4 @@ run =
 
 cartLoad = \path ->
     romData = Path.readBytes! path
-    Task.ok (Cartridge.header romData)
+    Task.ok (Cartridge.Header.read romData)
