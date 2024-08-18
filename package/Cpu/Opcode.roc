@@ -64,24 +64,24 @@ Instruction : [
     Nop,
     Prefix,
     Halt,
-    Di,
-    Ei,
+    DisableInterrupts, # Di
+    EnableInterrupts, # Ei
     # Jumps / calls
     Call Condition,
-    Jr Condition,
-    Jp Condition [Read16Immediate],
+    JumpRelative Condition, # Jr
+    JumpAbsolute Condition [Read16Immediate], # Jp
     JpIndirectHL,
-    Ret Condition,
-    Reti,
-    Rst U8,
-    Rlca,
-    Rrca,
-    Rla,
-    Rra,
-    Daa,
-    Cpl,
-    Scf,
-    Ccf,
+    Return Condition, # Ret
+    ReturnAndEnableInterrupts, # Reti
+    Restart U8, # Rst
+    RotateLeftCircularAccumulator, # Rlca
+    RotateRightCircularAccumulator, # Rrca
+    RotateLeftAccumulator, # Rla
+    RotateRightAccumulator, # Rra
+    DecimalAdjustAccumulator, # Daa
+    ComplementAccumulator, # Cpl
+    SetCarryFlag, # Scf
+    ComplementCarryFlag, # Ccf
     # 8-bit arithmetic / logical instructions
     Add Read8,
     Adc Read8,
@@ -117,7 +117,7 @@ instruction = \byte ->
         0x04 -> Inc Read8RegisterB Write8RegisterB
         0x05 -> Dec Read8RegisterB Write8RegisterB
         0x06 -> Ld Write8RegisterB Read8Immediate
-        0x07 -> Rlca
+        0x07 -> RotateLeftCircularAccumulator
         0x08 -> Ld Write16IndirectWord16Operand Read16RegisterSP
         0x09 -> Add16 Read16RegisterBC
         0x0A -> Ld Write8RegisterA Read8IndirectBC
@@ -125,7 +125,7 @@ instruction = \byte ->
         0x0C -> Inc Read8RegisterC Write8RegisterC
         0x0D -> Dec Read8RegisterC Write8RegisterC
         0x0E -> Ld Write8RegisterC Read8Immediate
-        0x0F -> Rrca
+        0x0F -> RotateRightCircularAccumulator
         0x10 -> Nop # Stop
         0x11 -> Ld Write16RegisterDE Read16Immediate
         0x12 -> Ld Write8IndirectDE Read8RegisterA
@@ -133,47 +133,47 @@ instruction = \byte ->
         0x14 -> Inc Read8RegisterD Write8RegisterD
         0x15 -> Dec Read8RegisterD Write8RegisterD
         0x16 -> Ld Write8RegisterD Read8Immediate
-        0x17 -> Rla
-        0x18 -> Jr Always
+        0x17 -> RotateLeftAccumulator
+        0x18 -> JumpRelative Always
         0x19 -> Add16 Read16RegisterDE
         0x1A -> Ld Write8RegisterA Read8IndirectDE
         0x1B -> Dec16 Read16RegisterDE Write16RegisterDE
         0x1C -> Inc Read8RegisterE Write8RegisterE
         0x1D -> Dec Read8RegisterE Write8RegisterE
         0x1E -> Ld Write8RegisterE Read8Immediate
-        0x1F -> Rra
-        0x20 -> Jr NotZero
+        0x1F -> RotateRightAccumulator
+        0x20 -> JumpRelative NotZero
         0x21 -> Ld Write16RegisterHL Read16Immediate
         0x22 -> Ld Write8IndirectHLPostIncrement Read8RegisterA
         0x23 -> Inc16 Read16RegisterHL Write16RegisterHL
         0x24 -> Inc Read8RegisterH Write8RegisterH
         0x25 -> Dec Read8RegisterH Write8RegisterH
         0x26 -> Ld Write8RegisterH Read8Immediate
-        0x27 -> Daa
-        0x28 -> Jr Zero
+        0x27 -> DecimalAdjustAccumulator
+        0x28 -> JumpRelative Zero
         0x29 -> Add16 Read16RegisterHL
         0x2A -> Ld Write8RegisterA Read8IndirectHLPostIncrement
         0x2B -> Dec16 Read16RegisterHL Write16RegisterHL
         0x2C -> Inc Read8RegisterL Write8RegisterL
         0x2D -> Dec Read8RegisterL Write8RegisterL
         0x2E -> Ld Write8RegisterL Read8Immediate
-        0x2F -> Cpl
-        0x30 -> Jr NotCarry
+        0x2F -> ComplementAccumulator
+        0x30 -> JumpRelative NotCarry
         0x31 -> Ld Write16RegisterSP Read16Immediate
         0x32 -> Ld Write8IndirectHLPostDecrement Read8RegisterA
         0x33 -> Inc16 Read16RegisterSP Write16RegisterSP
         0x34 -> Inc Read8IndirectHL Write8IndirectHL
         0x35 -> Dec Read8IndirectHL Write8IndirectHL
         0x36 -> Ld Write8IndirectHL Read8Immediate
-        0x37 -> Scf
-        0x38 -> Jr Carry
+        0x37 -> SetCarryFlag
+        0x38 -> JumpRelative Carry
         0x39 -> Add16 Read16RegisterSP
         0x3A -> Ld Write8RegisterA Read8IndirectHLPostDecrement
         0x3B -> Dec16 Read16RegisterSP Write16RegisterSP
         0x3C -> Inc Read8RegisterA Write8RegisterA
         0x3D -> Dec Read8RegisterA Write8RegisterA
         0x3E -> Ld Write8RegisterA Read8Immediate
-        0x3F -> Ccf
+        0x3F -> ComplementCarryFlag
         0x40 -> Ld Write8RegisterB Read8RegisterB
         0x41 -> Ld Write8RegisterB Read8RegisterC
         0x42 -> Ld Write8RegisterB Read8RegisterD
@@ -302,38 +302,38 @@ instruction = \byte ->
         0xBD -> Cp Read8RegisterL
         0xBE -> Cp Read8IndirectHL
         0xBF -> Cp Read8RegisterA
-        0xC0 -> Ret NotZero
+        0xC0 -> Return NotZero
         0xC1 -> Pop Write16RegisterBC
-        0xC2 -> Jp NotZero Read16Immediate
-        0xC3 -> Jp Always Read16Immediate
+        0xC2 -> JumpAbsolute NotZero Read16Immediate
+        0xC3 -> JumpAbsolute Always Read16Immediate
         0xC4 -> Call NotZero
         0xC5 -> Push Read16RegisterBC
         0xC6 -> Add Read8Immediate
-        0xC7 -> Rst 0x00
-        0xC8 -> Ret Zero
-        0xC9 -> Ret Always
-        0xCA -> Jp Zero Read16Immediate
+        0xC7 -> Restart 0x00
+        0xC8 -> Return Zero
+        0xC9 -> Return Always
+        0xCA -> JumpAbsolute Zero Read16Immediate
         0xCB -> Prefix
         0xCC -> Call Zero
         0xCD -> Call Always
         0xCE -> Adc Read8Immediate
-        0xCF -> Rst 0x08
-        0xD0 -> Ret NotCarry
+        0xCF -> Restart 0x08
+        0xD0 -> Return NotCarry
         0xD1 -> Pop Write16RegisterDE
-        0xD2 -> Jp NotCarry Read16Immediate
+        0xD2 -> JumpAbsolute NotCarry Read16Immediate
         0xD3 -> Illegal
         0xD4 -> Call NotCarry
         0xD5 -> Push Read16RegisterDE
         0xD6 -> Sub Read8Immediate
-        0xD7 -> Rst 0x10
-        0xD8 -> Ret Carry
-        0xD9 -> Reti
-        0xDA -> Jp Carry Read16Immediate
+        0xD7 -> Restart 0x10
+        0xD8 -> Return Carry
+        0xD9 -> ReturnAndEnableInterrupts
+        0xDA -> JumpAbsolute Carry Read16Immediate
         0xDB -> Illegal
         0xDC -> Call Carry
         0xDD -> Illegal
         0xDE -> Sbc Read8Immediate
-        0xDF -> Rst 0x18
+        0xDF -> Restart 0x18
         0xE0 -> Ld Write8IndirectWord8Operand Read8RegisterA
         0xE1 -> Pop Write16RegisterHL
         0xE2 -> Ld Write8IndirectC Read8RegisterA
@@ -341,7 +341,7 @@ instruction = \byte ->
         0xE4 -> Illegal
         0xE5 -> Push Read16RegisterHL
         0xE6 -> And Read8Immediate
-        0xE7 -> Rst 0x20
+        0xE7 -> Restart 0x20
         0xE8 -> AddSPSignedImmediate
         0xE9 -> JpIndirectHL
         0xEA -> Ld Write8IndirectWord16Operand Read8RegisterA
@@ -349,21 +349,21 @@ instruction = \byte ->
         0xEC -> Illegal
         0xED -> Illegal
         0xEE -> Xor Read8Immediate
-        0xEF -> Rst 0x28
+        0xEF -> Restart 0x28
         0xF0 -> Ld Write8RegisterA Read8IndirectWord8Operand
         0xF1 -> Pop Write16RegisterAF
         0xF2 -> Ld Write8RegisterA Read8IndirectC
-        0xF3 -> Di
+        0xF3 -> DisableInterrupts
         0xF4 -> Illegal
         0xF5 -> Push Read16RegisterAF
         0xF6 -> Or Read8Immediate
-        0xF7 -> Rst 0x30
+        0xF7 -> Restart 0x30
         0xF8 -> LdHLSPPlusSignedImmediate
         0xF9 -> LdSPHL
         0xFA -> Ld Write8RegisterA Read8IndirectWord16Operand
-        0xFB -> Ei
+        0xFB -> EnableInterrupts
         0xFC -> Illegal
         0xFD -> Illegal
         0xFE -> Cp Read8Immediate
-        0xFF -> Rst 0x38
+        0xFF -> Restart 0x38
         _ -> Unknown
