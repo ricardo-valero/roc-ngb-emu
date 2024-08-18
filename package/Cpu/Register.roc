@@ -1,7 +1,8 @@
-module [Register, init, read, write]
+module [Register, Type8, Type16, init, read8, read16, write8, write16]
 
 # 8-Bit and 16-Bit
-Type : [A, F, B, C, D, E, H, L, AF, BC, DE, HL, SP, PC]
+Type8 : [A, F, B, C, D, E, H, L]
+Type16 : [AF, BC, DE, HL, SP, PC]
 
 Register : {
     af : U16,
@@ -30,8 +31,8 @@ init = {
     interruptMasterEnable: Bool.true,
 }
 
-read : Register, Type -> U16
-read = \cpu, type ->
+read8 : Register, Type8 -> U16
+read8 = \cpu, type ->
     when type is
         A -> Num.shiftRightZfBy cpu.af 8
         F -> Num.bitwiseAnd cpu.af 0xFF
@@ -41,6 +42,10 @@ read = \cpu, type ->
         E -> Num.bitwiseAnd cpu.de 0xFF
         H -> Num.shiftRightZfBy cpu.hl 8
         L -> Num.bitwiseAnd cpu.hl 0xFF
+
+read16 : Register, Type16 -> U16
+read16 = \cpu, type ->
+    when type is
         AF -> cpu.af
         BC -> cpu.bc
         DE -> cpu.de
@@ -48,8 +53,8 @@ read = \cpu, type ->
         SP -> cpu.sp
         PC -> cpu.pc
 
-write : U16, Register, Type -> Register
-write = \value, cpu, type ->
+write8 : U16, Register, Type8 -> Register
+write8 = \value, cpu, type ->
     when type is
         A -> { cpu & af: Num.bitwiseAnd cpu.af 0xFF |> Num.bitwiseOr (Num.shiftLeftBy value 8) }
         F -> { cpu & af: Num.bitwiseAnd cpu.af 0xFF00 |> Num.bitwiseOr value }
@@ -59,6 +64,10 @@ write = \value, cpu, type ->
         E -> { cpu & de: Num.bitwiseAnd cpu.de 0xFF00 |> Num.bitwiseOr value }
         H -> { cpu & hl: Num.bitwiseAnd cpu.hl 0xFF |> Num.bitwiseOr (Num.shiftLeftBy value 8) }
         L -> { cpu & hl: Num.bitwiseAnd cpu.hl 0xFF00 |> Num.bitwiseOr value }
+
+write16 : U16, Register, Type16 -> Register
+write16 = \value, cpu, type ->
+    when type is
         AF -> { cpu & af: Num.bitwiseAnd value 0xFFF0 } # The lowest 4 bits are always discarded for the F register as per spec
         BC -> { cpu & bc: Num.bitwiseAnd value 0xFFFF }
         DE -> { cpu & de: Num.bitwiseAnd value 0xFFFF }
