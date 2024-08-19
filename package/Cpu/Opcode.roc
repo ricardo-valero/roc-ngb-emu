@@ -12,9 +12,6 @@ AddressMode : [
 
 ## https://gbdev.io/gb-opcodes/optables/
 
-# TODO:
-# 8-bit shift, rotate and bit instructions
-
 Instruction : [
     # Other
     Unknown,
@@ -32,15 +29,14 @@ Instruction : [
     Return Condition, # Ret
     ReturnAndEnableInterrupts, # Reti
     Restart U8, # Rst
-    RotateLeftCircularAccumulator, # Rlca
-    RotateRightCircularAccumulator, # Rrca
-    RotateLeftAccumulator, # Rla
-    RotateRightAccumulator, # Rra
     DecimalAdjustAccumulator, # Daa
     ComplementAccumulator, # Cpl
     SetCarryFlag, # Scf
     ComplementCarryFlag, # Ccf
-    JpIndirectHL,
+    JpIndirectHL, # TODO
+    # 8-bit shift, rotate and bit instructions
+    RotateCircularAccumulator [Left, Right], # Rlca & Rrca
+    RotateAccumulator [Left, Right], # Rla & Rra
     # 8-bit arithmetic / logical instructions
     Add AddressMode,
     Adc AddressMode, # Adc
@@ -56,18 +52,18 @@ Instruction : [
     Add16 AddressMode,
     Dec16 AddressMode AddressMode,
     Inc16 AddressMode AddressMode,
-    AddSPSignedImmediate,
+    AddSPSignedImmediate, # TODO
     # 8-bit load instructions
     Load AddressMode AddressMode, # Ld
     # 16-bit load instructions
     Load16 AddressMode AddressMode, # Ld
     Push AddressMode,
     Pop AddressMode,
-    LdHLSPPlusSignedImmediate,
-    LdSPHL,
+    LdHLSPPlusSignedImmediate, # TODO
+    LdSPHL, # TODO
 ]
 
-instruction : U16 -> Instruction
+instruction : U8 -> Instruction
 instruction = \byte ->
     when byte is
         0x00 -> Nop
@@ -77,7 +73,7 @@ instruction = \byte ->
         0x04 -> Inc (Direct8 B) (Direct8 B)
         0x05 -> Dec (Direct8 B) (Direct8 B)
         0x06 -> Load (Direct8 B) Immediate
-        0x07 -> RotateLeftCircularAccumulator
+        0x07 -> RotateCircularAccumulator Left
         0x08 -> Load16 (Indirect Word16Operand) (Direct16 SP)
         0x09 -> Add16 (Direct16 BC)
         0x0A -> Load (Direct8 A) (Indirect BC)
@@ -85,7 +81,7 @@ instruction = \byte ->
         0x0C -> Inc (Direct8 C) (Direct8 C)
         0x0D -> Dec (Direct8 C) (Direct8 C)
         0x0E -> Load (Direct8 C) Immediate
-        0x0F -> RotateRightCircularAccumulator
+        0x0F -> RotateCircularAccumulator Right
         0x10 -> Nop # Stop
         0x11 -> Load16 (Direct16 DE) Immediate
         0x12 -> Load (Indirect DE) (Direct8 A)
@@ -93,7 +89,7 @@ instruction = \byte ->
         0x14 -> Inc (Direct8 D) (Direct8 D)
         0x15 -> Dec (Direct8 D) (Direct8 D)
         0x16 -> Load (Direct8 D) Immediate
-        0x17 -> RotateLeftAccumulator
+        0x17 -> RotateAccumulator Left
         0x18 -> JumpRelative Always
         0x19 -> Add16 (Direct16 DE)
         0x1A -> Load (Direct8 A) (Indirect DE)
@@ -101,7 +97,7 @@ instruction = \byte ->
         0x1C -> Inc (Direct8 E) (Direct8 E)
         0x1D -> Dec (Direct8 E) (Direct8 E)
         0x1E -> Load (Direct8 E) Immediate
-        0x1F -> RotateRightAccumulator
+        0x1F -> RotateAccumulator Right
         0x20 -> JumpRelative NotZero
         0x21 -> Load16 (Direct16 HL) Immediate
         0x22 -> Load (Indirect HLPostIncrement) (Direct8 A)
@@ -326,4 +322,278 @@ instruction = \byte ->
         0xFD -> Illegal
         0xFE -> Compare Immediate
         0xFF -> Restart 0x38
+        _ -> Unknown
+
+# 8-bit shift, rotate and bit instructions
+Prefixed : [
+    Bit U8 AddressMode,
+    Reset U8 AddressMode AddressMode, # Res
+    Rotate [Left, Right] AddressMode AddressMode, # Rl & Rr
+    RotateCircular [Left, Right] AddressMode AddressMode, # Rlc & Rrc
+    Set U8 AddressMode AddressMode,
+    ShiftArithmetic [Left, Right] AddressMode AddressMode, # Sla & Sra
+    ShiftLogical [Right] AddressMode AddressMode, # Srl
+    Swap AddressMode AddressMode,
+    Unknown,
+]
+
+prefixed : U8 -> Prefixed
+prefixed = \byte ->
+    when byte is
+        0x00 -> RotateCircular Left (Direct8 B) (Direct8 B)
+        0x01 -> RotateCircular Left (Direct8 C) (Direct8 C)
+        0x02 -> RotateCircular Left (Direct8 D) (Direct8 D)
+        0x03 -> RotateCircular Left (Direct8 E) (Direct8 E)
+        0x04 -> RotateCircular Left (Direct8 H) (Direct8 H)
+        0x05 -> RotateCircular Left (Direct8 L) (Direct8 L)
+        0x06 -> RotateCircular Left (Indirect HL) (Indirect HL)
+        0x07 -> RotateCircular Left (Direct8 A) (Direct8 A)
+        0x08 -> RotateCircular Right (Direct8 B) (Direct8 B)
+        0x09 -> RotateCircular Right (Direct8 C) (Direct8 C)
+        0x0A -> RotateCircular Right (Direct8 D) (Direct8 D)
+        0x0B -> RotateCircular Right (Direct8 E) (Direct8 E)
+        0x0C -> RotateCircular Right (Direct8 H) (Direct8 H)
+        0x0D -> RotateCircular Right (Direct8 L) (Direct8 L)
+        0x0E -> RotateCircular Right (Indirect HL) (Indirect HL)
+        0x0F -> RotateCircular Right (Direct8 A) (Direct8 A)
+        0x10 -> Rotate Left (Direct8 B) (Direct8 B)
+        0x11 -> Rotate Left (Direct8 C) (Direct8 C)
+        0x12 -> Rotate Left (Direct8 D) (Direct8 D)
+        0x13 -> Rotate Left (Direct8 E) (Direct8 E)
+        0x14 -> Rotate Left (Direct8 H) (Direct8 H)
+        0x15 -> Rotate Left (Direct8 L) (Direct8 L)
+        0x16 -> Rotate Left (Indirect HL) (Indirect HL)
+        0x17 -> Rotate Left (Direct8 A) (Direct8 A)
+        0x18 -> Rotate Right (Direct8 B) (Direct8 B)
+        0x19 -> Rotate Right (Direct8 C) (Direct8 C)
+        0x1A -> Rotate Right (Direct8 D) (Direct8 D)
+        0x1B -> Rotate Right (Direct8 E) (Direct8 E)
+        0x1C -> Rotate Right (Direct8 H) (Direct8 H)
+        0x1D -> Rotate Right (Direct8 L) (Direct8 L)
+        0x1E -> Rotate Right (Indirect HL) (Indirect HL)
+        0x1F -> Rotate Right (Direct8 A) (Direct8 A)
+        0x20 -> ShiftArithmetic Left (Direct8 B) (Direct8 B)
+        0x21 -> ShiftArithmetic Left (Direct8 C) (Direct8 C)
+        0x22 -> ShiftArithmetic Left (Direct8 D) (Direct8 D)
+        0x23 -> ShiftArithmetic Left (Direct8 E) (Direct8 E)
+        0x24 -> ShiftArithmetic Left (Direct8 H) (Direct8 H)
+        0x25 -> ShiftArithmetic Left (Direct8 L) (Direct8 L)
+        0x26 -> ShiftArithmetic Left (Indirect HL) (Indirect HL)
+        0x27 -> ShiftArithmetic Left (Direct8 A) (Direct8 A)
+        0x28 -> ShiftArithmetic Right (Direct8 B) (Direct8 B)
+        0x29 -> ShiftArithmetic Right (Direct8 C) (Direct8 C)
+        0x2A -> ShiftArithmetic Right (Direct8 D) (Direct8 D)
+        0x2B -> ShiftArithmetic Right (Direct8 E) (Direct8 E)
+        0x2C -> ShiftArithmetic Right (Direct8 H) (Direct8 H)
+        0x2D -> ShiftArithmetic Right (Direct8 L) (Direct8 L)
+        0x2E -> ShiftArithmetic Right (Indirect HL) (Indirect HL)
+        0x2F -> ShiftArithmetic Right (Direct8 A) (Direct8 A)
+        0x30 -> Swap (Direct8 B) (Direct8 B)
+        0x31 -> Swap (Direct8 C) (Direct8 C)
+        0x32 -> Swap (Direct8 D) (Direct8 D)
+        0x33 -> Swap (Direct8 E) (Direct8 E)
+        0x34 -> Swap (Direct8 H) (Direct8 H)
+        0x35 -> Swap (Direct8 L) (Direct8 L)
+        0x36 -> Swap (Indirect HL) (Indirect HL)
+        0x37 -> Swap (Direct8 A) (Direct8 A)
+        0x38 -> ShiftLogical Right (Direct8 B) (Direct8 B)
+        0x39 -> ShiftLogical Right (Direct8 C) (Direct8 C)
+        0x3A -> ShiftLogical Right (Direct8 D) (Direct8 D)
+        0x3B -> ShiftLogical Right (Direct8 E) (Direct8 E)
+        0x3C -> ShiftLogical Right (Direct8 H) (Direct8 H)
+        0x3D -> ShiftLogical Right (Direct8 L) (Direct8 L)
+        0x3E -> ShiftLogical Right (Indirect HL) (Indirect HL)
+        0x3F -> ShiftLogical Right (Direct8 A) (Direct8 A)
+        0x40 -> Bit 0 (Direct8 B)
+        0x41 -> Bit 0 (Direct8 C)
+        0x42 -> Bit 0 (Direct8 D)
+        0x43 -> Bit 0 (Direct8 E)
+        0x44 -> Bit 0 (Direct8 H)
+        0x45 -> Bit 0 (Direct8 L)
+        0x46 -> Bit 0 (Indirect HL)
+        0x47 -> Bit 0 (Direct8 A)
+        0x48 -> Bit 1 (Direct8 B)
+        0x49 -> Bit 1 (Direct8 C)
+        0x4A -> Bit 1 (Direct8 D)
+        0x4B -> Bit 1 (Direct8 E)
+        0x4C -> Bit 1 (Direct8 H)
+        0x4D -> Bit 1 (Direct8 L)
+        0x4E -> Bit 1 (Indirect HL)
+        0x4F -> Bit 1 (Direct8 A)
+        0x50 -> Bit 2 (Direct8 B)
+        0x51 -> Bit 2 (Direct8 C)
+        0x52 -> Bit 2 (Direct8 D)
+        0x53 -> Bit 2 (Direct8 E)
+        0x54 -> Bit 2 (Direct8 H)
+        0x55 -> Bit 2 (Direct8 L)
+        0x56 -> Bit 2 (Indirect HL)
+        0x57 -> Bit 2 (Direct8 A)
+        0x58 -> Bit 3 (Direct8 B)
+        0x59 -> Bit 3 (Direct8 C)
+        0x5A -> Bit 3 (Direct8 D)
+        0x5B -> Bit 3 (Direct8 E)
+        0x5C -> Bit 3 (Direct8 H)
+        0x5D -> Bit 3 (Direct8 L)
+        0x5E -> Bit 3 (Indirect HL)
+        0x5F -> Bit 3 (Direct8 A)
+        0x60 -> Bit 4 (Direct8 B)
+        0x61 -> Bit 4 (Direct8 C)
+        0x62 -> Bit 4 (Direct8 D)
+        0x63 -> Bit 4 (Direct8 E)
+        0x64 -> Bit 4 (Direct8 H)
+        0x65 -> Bit 4 (Direct8 L)
+        0x66 -> Bit 4 (Indirect HL)
+        0x67 -> Bit 4 (Direct8 A)
+        0x68 -> Bit 5 (Direct8 B)
+        0x69 -> Bit 5 (Direct8 C)
+        0x6A -> Bit 5 (Direct8 D)
+        0x6B -> Bit 5 (Direct8 E)
+        0x6C -> Bit 5 (Direct8 H)
+        0x6D -> Bit 5 (Direct8 L)
+        0x6E -> Bit 5 (Indirect HL)
+        0x6F -> Bit 5 (Direct8 A)
+        0x70 -> Bit 6 (Direct8 B)
+        0x71 -> Bit 6 (Direct8 C)
+        0x72 -> Bit 6 (Direct8 D)
+        0x73 -> Bit 6 (Direct8 E)
+        0x74 -> Bit 6 (Direct8 H)
+        0x75 -> Bit 6 (Direct8 L)
+        0x76 -> Bit 6 (Indirect HL)
+        0x77 -> Bit 6 (Direct8 A)
+        0x78 -> Bit 7 (Direct8 B)
+        0x79 -> Bit 7 (Direct8 C)
+        0x7A -> Bit 7 (Direct8 D)
+        0x7B -> Bit 7 (Direct8 E)
+        0x7C -> Bit 7 (Direct8 H)
+        0x7D -> Bit 7 (Direct8 L)
+        0x7E -> Bit 7 (Indirect HL)
+        0x7F -> Bit 7 (Direct8 A)
+        0x80 -> Reset 0 (Direct8 B) (Direct8 B)
+        0x81 -> Reset 0 (Direct8 C) (Direct8 C)
+        0x82 -> Reset 0 (Direct8 D) (Direct8 D)
+        0x83 -> Reset 0 (Direct8 E) (Direct8 E)
+        0x84 -> Reset 0 (Direct8 H) (Direct8 H)
+        0x85 -> Reset 0 (Direct8 L) (Direct8 L)
+        0x86 -> Reset 0 (Indirect HL) (Indirect HL)
+        0x87 -> Reset 0 (Direct8 A) (Direct8 A)
+        0x88 -> Reset 1 (Direct8 B) (Direct8 B)
+        0x89 -> Reset 1 (Direct8 C) (Direct8 C)
+        0x8A -> Reset 1 (Direct8 D) (Direct8 D)
+        0x8B -> Reset 1 (Direct8 E) (Direct8 E)
+        0x8C -> Reset 1 (Direct8 H) (Direct8 H)
+        0x8D -> Reset 1 (Direct8 L) (Direct8 L)
+        0x8E -> Reset 1 (Indirect HL) (Indirect HL)
+        0x8F -> Reset 1 (Direct8 A) (Direct8 A)
+        0x90 -> Reset 2 (Direct8 B) (Direct8 B)
+        0x91 -> Reset 2 (Direct8 C) (Direct8 C)
+        0x92 -> Reset 2 (Direct8 D) (Direct8 D)
+        0x93 -> Reset 2 (Direct8 E) (Direct8 E)
+        0x94 -> Reset 2 (Direct8 H) (Direct8 H)
+        0x95 -> Reset 2 (Direct8 L) (Direct8 L)
+        0x96 -> Reset 2 (Indirect HL) (Indirect HL)
+        0x97 -> Reset 2 (Direct8 A) (Direct8 A)
+        0x98 -> Reset 3 (Direct8 B) (Direct8 B)
+        0x99 -> Reset 3 (Direct8 C) (Direct8 C)
+        0x9A -> Reset 3 (Direct8 D) (Direct8 D)
+        0x9B -> Reset 3 (Direct8 E) (Direct8 E)
+        0x9C -> Reset 3 (Direct8 H) (Direct8 H)
+        0x9D -> Reset 3 (Direct8 L) (Direct8 L)
+        0x9E -> Reset 3 (Indirect HL) (Indirect HL)
+        0x9F -> Reset 3 (Direct8 A) (Direct8 A)
+        0xA0 -> Reset 4 (Direct8 B) (Direct8 B)
+        0xA1 -> Reset 4 (Direct8 C) (Direct8 C)
+        0xA2 -> Reset 4 (Direct8 D) (Direct8 D)
+        0xA3 -> Reset 4 (Direct8 E) (Direct8 E)
+        0xA4 -> Reset 4 (Direct8 H) (Direct8 H)
+        0xA5 -> Reset 4 (Direct8 L) (Direct8 L)
+        0xA6 -> Reset 4 (Indirect HL) (Indirect HL)
+        0xA7 -> Reset 4 (Direct8 A) (Direct8 A)
+        0xA8 -> Reset 5 (Direct8 B) (Direct8 B)
+        0xA9 -> Reset 5 (Direct8 C) (Direct8 C)
+        0xAA -> Reset 5 (Direct8 D) (Direct8 D)
+        0xAB -> Reset 5 (Direct8 E) (Direct8 E)
+        0xAC -> Reset 5 (Direct8 H) (Direct8 H)
+        0xAD -> Reset 5 (Direct8 L) (Direct8 L)
+        0xAE -> Reset 5 (Indirect HL) (Indirect HL)
+        0xAF -> Reset 5 (Direct8 A) (Direct8 A)
+        0xB0 -> Reset 6 (Direct8 B) (Direct8 B)
+        0xB1 -> Reset 6 (Direct8 C) (Direct8 C)
+        0xB2 -> Reset 6 (Direct8 D) (Direct8 D)
+        0xB3 -> Reset 6 (Direct8 E) (Direct8 E)
+        0xB4 -> Reset 6 (Direct8 H) (Direct8 H)
+        0xB5 -> Reset 6 (Direct8 L) (Direct8 L)
+        0xB6 -> Reset 6 (Indirect HL) (Indirect HL)
+        0xB7 -> Reset 6 (Direct8 A) (Direct8 A)
+        0xB8 -> Reset 7 (Direct8 B) (Direct8 B)
+        0xB9 -> Reset 7 (Direct8 C) (Direct8 C)
+        0xBA -> Reset 7 (Direct8 D) (Direct8 D)
+        0xBB -> Reset 7 (Direct8 E) (Direct8 E)
+        0xBC -> Reset 7 (Direct8 H) (Direct8 H)
+        0xBD -> Reset 7 (Direct8 L) (Direct8 L)
+        0xBE -> Reset 7 (Indirect HL) (Indirect HL)
+        0xBF -> Reset 7 (Direct8 A) (Direct8 A)
+        0xC0 -> Set 0 (Direct8 B) (Direct8 B)
+        0xC1 -> Set 0 (Direct8 C) (Direct8 C)
+        0xC2 -> Set 0 (Direct8 D) (Direct8 D)
+        0xC3 -> Set 0 (Direct8 E) (Direct8 E)
+        0xC4 -> Set 0 (Direct8 H) (Direct8 H)
+        0xC5 -> Set 0 (Direct8 L) (Direct8 L)
+        0xC6 -> Set 0 (Indirect HL) (Indirect HL)
+        0xC7 -> Set 0 (Direct8 A) (Direct8 A)
+        0xC8 -> Set 1 (Direct8 B) (Direct8 B)
+        0xC9 -> Set 1 (Direct8 C) (Direct8 C)
+        0xCA -> Set 1 (Direct8 D) (Direct8 D)
+        0xCB -> Set 1 (Direct8 E) (Direct8 E)
+        0xCC -> Set 1 (Direct8 H) (Direct8 H)
+        0xCD -> Set 1 (Direct8 L) (Direct8 L)
+        0xCE -> Set 1 (Indirect HL) (Indirect HL)
+        0xCF -> Set 1 (Direct8 A) (Direct8 A)
+        0xD0 -> Set 2 (Direct8 B) (Direct8 B)
+        0xD1 -> Set 2 (Direct8 C) (Direct8 C)
+        0xD2 -> Set 2 (Direct8 D) (Direct8 D)
+        0xD3 -> Set 2 (Direct8 E) (Direct8 E)
+        0xD4 -> Set 2 (Direct8 H) (Direct8 H)
+        0xD5 -> Set 2 (Direct8 L) (Direct8 L)
+        0xD6 -> Set 2 (Indirect HL) (Indirect HL)
+        0xD7 -> Set 2 (Direct8 A) (Direct8 A)
+        0xD8 -> Set 3 (Direct8 B) (Direct8 B)
+        0xD9 -> Set 3 (Direct8 C) (Direct8 C)
+        0xDA -> Set 3 (Direct8 D) (Direct8 D)
+        0xDB -> Set 3 (Direct8 E) (Direct8 E)
+        0xDC -> Set 3 (Direct8 H) (Direct8 H)
+        0xDD -> Set 3 (Direct8 L) (Direct8 L)
+        0xDE -> Set 3 (Indirect HL) (Indirect HL)
+        0xDF -> Set 3 (Direct8 A) (Direct8 A)
+        0xE0 -> Set 4 (Direct8 B) (Direct8 B)
+        0xE1 -> Set 4 (Direct8 C) (Direct8 C)
+        0xE2 -> Set 4 (Direct8 D) (Direct8 D)
+        0xE3 -> Set 4 (Direct8 E) (Direct8 E)
+        0xE4 -> Set 4 (Direct8 H) (Direct8 H)
+        0xE5 -> Set 4 (Direct8 L) (Direct8 L)
+        0xE6 -> Set 4 (Indirect HL) (Indirect HL)
+        0xE7 -> Set 4 (Direct8 A) (Direct8 A)
+        0xE8 -> Set 5 (Direct8 B) (Direct8 B)
+        0xE9 -> Set 5 (Direct8 C) (Direct8 C)
+        0xEA -> Set 5 (Direct8 D) (Direct8 D)
+        0xEB -> Set 5 (Direct8 E) (Direct8 E)
+        0xEC -> Set 5 (Direct8 H) (Direct8 H)
+        0xED -> Set 5 (Direct8 L) (Direct8 L)
+        0xEE -> Set 5 (Indirect HL) (Indirect HL)
+        0xEF -> Set 5 (Direct8 A) (Direct8 A)
+        0xF0 -> Set 6 (Direct8 B) (Direct8 B)
+        0xF1 -> Set 6 (Direct8 C) (Direct8 C)
+        0xF2 -> Set 6 (Direct8 D) (Direct8 D)
+        0xF3 -> Set 6 (Direct8 E) (Direct8 E)
+        0xF4 -> Set 6 (Direct8 H) (Direct8 H)
+        0xF5 -> Set 6 (Direct8 L) (Direct8 L)
+        0xF6 -> Set 6 (Indirect HL) (Indirect HL)
+        0xF7 -> Set 6 (Direct8 A) (Direct8 A)
+        0xF8 -> Set 7 (Direct8 B) (Direct8 B)
+        0xF9 -> Set 7 (Direct8 C) (Direct8 C)
+        0xFA -> Set 7 (Direct8 D) (Direct8 D)
+        0xFB -> Set 7 (Direct8 E) (Direct8 E)
+        0xFC -> Set 7 (Direct8 H) (Direct8 H)
+        0xFD -> Set 7 (Direct8 L) (Direct8 L)
+        0xFE -> Set 7 (Indirect HL) (Indirect HL)
+        0xFF -> Set 7 (Direct8 A) (Direct8 A)
         _ -> Unknown
