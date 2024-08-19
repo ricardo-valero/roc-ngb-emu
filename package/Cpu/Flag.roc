@@ -1,25 +1,28 @@
 module [Flag, mask, modify, get, setAll]
 
-# Flags: 0bZNHC0000
+import Bit exposing [Bit]
 
+# Flags: 0bZNHC0000
+# Flag : [Z, N, H, C]
 Flag : [Zero, Subtract, HalfCarry, Carry]
 
+toBit : Flag -> Bit
+toBit = \flag ->
+    when flag is
+        Zero -> B7
+        Subtract -> B6
+        HalfCarry -> B5
+        Carry -> B4
+
 mask : Flag -> U8
-mask = \flag ->
-    Num.shiftLeftBy
-        1
-        (
-            when flag is
-                Zero -> 7
-                Subtract -> 6
-                HalfCarry -> 5
-                Carry -> 4
-        )
+mask = \flag -> Bit.mask (toBit flag)
 
 expect mask Zero == 0b10000000 # 0x80
-expect mask Subtract == 0b01000000 # 0x40
-expect mask HalfCarry == 0b00100000 # 0x20
-expect mask Carry == 0b00010000 # 0x10
+
+get : Flag, U8 -> Bool
+get = \flag, flags -> Bit.check (toBit flag) flags
+
+expect get Carry 0b00010000 == Bool.true
 
 modify : Delta, Delta, Delta, Delta -> (U8 -> U8)
 modify = \z, n, h, c -> \flags ->
@@ -48,12 +51,6 @@ resolveDelta = \delta, m, flags ->
                 m
             else
                 0x00
-
-get : Flag, U8 -> Bool
-get = \flag, flags ->
-    Num.bitwiseAnd (mask flag) flags > 0
-
-expect get Carry 0b00010000 == Bool.true
 
 setAll : Bool, Bool, Bool, Bool -> U8
 setAll = \z, n, h, c -> (modify (Value z) (Value n) (Value h) (Value c)) 0
