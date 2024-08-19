@@ -12,8 +12,9 @@ Get in touch and let's work on this together!
 
 I'm using these resources:
 
-- [Gameboy Pan Docs](https://gbdev.io/pandocs)
-- [▶️ Gameboy Emulator Development - Low Level Devel](https://www.youtube.com/watch?v=e87qKixKFME&list=PLVxiWMqQvhg_yk4qy2cSC3457wZJga_e5)
+- 📄 [Gameboy Pan Docs](https://gbdev.io/pandocs)
+- 🎥 [Gameboy Emulator Development - Low Level Devel](https://www.youtube.com/watch?v=e87qKixKFME&list=PLVxiWMqQvhg_yk4qy2cSC3457wZJga_e5)
+- 📝 [Writing an emulator](https://blog.tigris.fr/2019/07/09/writing-an-emulator-the-first-steps/)
 
 Heavily inspired by:
 
