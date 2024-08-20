@@ -1,4 +1,4 @@
-module [Flag, mask, modify, get, setAll]
+module [Flag, Delta, mask, modify, get, setAll]
 
 import Bit exposing [Bit]
 
@@ -24,6 +24,8 @@ get = \flag, flags -> Bit.check (toBit flag) flags
 
 expect get Carry 0b00010000 == Bool.true
 
+Delta : [Unchanged, Complemented, Value Bool]
+
 modify : Delta, Delta, Delta, Delta -> (U8 -> U8)
 modify = \z, n, h, c -> \flags ->
         [
@@ -34,8 +36,6 @@ modify = \z, n, h, c -> \flags ->
         ]
         |> List.map (\(d, m) -> resolveDelta d m flags)
         |> List.walk 0x00 Num.bitwiseOr
-
-Delta : [Unchanged, Complemented, Value Bool]
 
 resolveDelta : Delta, U8, U8 -> U8
 resolveDelta = \delta, m, flags ->
