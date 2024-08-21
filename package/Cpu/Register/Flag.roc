@@ -1,4 +1,4 @@
-module [Flag, Delta, mask, modify, get, setAll]
+module [Flag, Delta, mask, modify, check, setAll]
 
 import Bit exposing [Bit]
 
@@ -19,26 +19,27 @@ mask = \flag -> Bit.mask (toBit flag)
 
 expect mask Zero == 0b10000000 # 0x80
 
-get : Flag, U8 -> Bool
-get = \flag, flags -> Bit.check (toBit flag) flags
+check : Flag, U8 -> Bool
+check = \flag, flags -> Bit.check (toBit flag) flags
 
-expect get Carry 0b00010000 == Bool.true
+expect check Carry 0b00010000 == Bool.true
 
 Delta : [Unchanged, Complemented, Value Bool]
 
 modify : Delta, Delta, Delta, Delta -> (U8 -> U8)
 modify = \z, n, h, c -> \flags ->
         [
-            (z, mask Zero),
-            (n, mask Subtract),
-            (h, mask HalfCarry),
-            (c, mask Carry),
+            (z, Zero),
+            (n, Subtract),
+            (h, HalfCarry),
+            (c, Carry),
         ]
-        |> List.map (\(d, m) -> resolveDelta d m flags)
+        |> List.map (\(d, flag) -> resolveDelta d flag flags)
         |> List.walk 0x00 Num.bitwiseOr
 
-resolveDelta : Delta, U8, U8 -> U8
-resolveDelta = \delta, m, flags ->
+resolveDelta : Delta, Flag, U8 -> U8
+resolveDelta = \delta, flag, flags ->
+    m = mask flag
     when delta is
         Unchanged -> Num.bitwiseAnd m flags
         Complemented ->

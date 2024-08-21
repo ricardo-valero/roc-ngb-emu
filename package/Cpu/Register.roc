@@ -16,10 +16,10 @@ Register : {
     hl : MemoryAddress,
     pc : MemoryAddress,
     sp : MemoryAddress,
+    interruptMasterEnable : Bool, # IME
     halted : Bool,
     interruptFlag : U8,
     interruptEnable : U8,
-    interruptMasterEnable : Bool,
 }
 
 init : Register
