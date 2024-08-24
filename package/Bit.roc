@@ -18,29 +18,29 @@ mask = \bit ->
                 B7 -> 7 # 0x80
         )
 
-expect mask B0 == 0b00000001
-expect mask B7 == 0b10000000
+expect mask B0 == 0b0000_0001
+expect mask B7 == 0b1000_0000
 
 # Set bit on byte
 set : Bit, U8 -> U8
 set = \bit, byte ->
     Num.bitwiseOr byte (mask bit)
 
-expect set B1 0b00000101 == 0b00000111
-expect set B6 0b11100000 == 0b11100000
+expect set B1 0b0000_0101 == 0b0000_0111
+expect set B6 0b1110_0000 == 0b1110_0000
 
 # Reset bit on byte
 reset : Bit, U8 -> U8
 reset = \bit, byte ->
     Num.bitwiseAnd byte (Num.bitwiseNot (mask bit))
 
-expect reset B2 0b00001110 == 0b00001010
-expect reset B5 0b01010000 == 0b01010000
+expect reset B2 0b000_01110 == 0b0000_1010
+expect reset B5 0b010_10000 == 0b0101_0000
 
 # Check bit on byte
 check : Bit, U8 -> Bool
 check = \bit, byte ->
     Num.bitwiseAnd byte (mask bit) > 0
 
-expect check B3 0b11101000 == Bool.true
-expect check B4 0b11101000 == Bool.false
+expect check B3 0b1110_1000 == Bool.true
+expect check B4 0b1110_1000 == Bool.false
