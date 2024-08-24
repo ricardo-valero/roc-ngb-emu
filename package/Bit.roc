@@ -1,4 +1,4 @@
-module [Bit, mask, set, reset, check]
+module [Bit, mask, set, clear, toggle, check]
 
 Bit : [B0, B1, B2, B3, B4, B5, B6, B7]
 
@@ -30,12 +30,20 @@ expect set B1 0b0000_0101 == 0b0000_0111
 expect set B6 0b1110_0000 == 0b1110_0000
 
 # Reset bit on byte
-reset : Bit, U8 -> U8
-reset = \bit, byte ->
+clear : Bit, U8 -> U8
+clear = \bit, byte ->
     Num.bitwiseAnd byte (Num.bitwiseNot (mask bit))
 
-expect reset B2 0b000_01110 == 0b0000_1010
-expect reset B5 0b010_10000 == 0b0101_0000
+expect clear B2 0b000_01110 == 0b0000_1010
+expect clear B5 0b010_10000 == 0b0101_0000
+
+# Toggle bit on byte
+toggle : Bit, U8 -> U8
+toggle = \bit, byte ->
+    Num.bitwiseXor byte (mask bit)
+
+expect toggle B2 0b0000_0101 == 0b0000_0001
+expect toggle B2 0b0000_0001 == 0b0000_0101
 
 # Check bit on byte
 check : Bit, U8 -> Bool
