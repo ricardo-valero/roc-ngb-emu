@@ -25,6 +25,7 @@
     in {
       default = pkgs.mkShell {
         buildInputs = with pkgs; [
+          nil
           (with rocPkgs; [full])
         ];
       };
