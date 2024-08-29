@@ -1,4 +1,4 @@
-module [mask, modify, check, setAll]
+module [Member, mask, modify, check, setAll]
 
 import Bit exposing [Bit]
 

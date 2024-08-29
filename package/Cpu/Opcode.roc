@@ -1,7 +1,15 @@
 module [Instruction, instruction]
 
-import Cpu.Condition exposing [Condition]
 import Cpu.Register exposing [Type8, Type16]
+import Cpu.Register.Flag exposing [Member]
+
+Condition : [Always, Flag Member Bool]
+
+checkCondition : Condition, U8 -> Bool
+checkCondition = \condition, flag ->
+    when condition is
+        Always -> Bool.true
+        Flag member value -> Cpu.Register.Flag.check member flag == value
 
 AddressingMode : [
     Immediate,
@@ -98,7 +106,7 @@ instruction = \byte ->
         0x1D -> Dec (Direct8 E) (Direct8 E)
         0x1E -> Load (Direct8 E) Immediate
         0x1F -> RotateAccumulator Right
-        0x20 -> JumpRelative NotZero
+        0x20 -> JumpRelative (Flag Zero Bool.false)
         0x21 -> Load16 (Direct16 HL) Immediate
         0x22 -> Load (Indirect HLPostIncrement) (Direct8 A)
         0x23 -> Inc16 (Direct16 HL) (Direct16 HL)
@@ -106,7 +114,7 @@ instruction = \byte ->
         0x25 -> Dec (Direct8 H) (Direct8 H)
         0x26 -> Load (Direct8 H) Immediate
         0x27 -> DecimalAdjustAccumulator
-        0x28 -> JumpRelative Zero
+        0x28 -> JumpRelative (Flag Zero Bool.true)
         0x29 -> Add16 (Direct16 HL)
         0x2A -> Load (Direct8 A) (Indirect HLPostIncrement)
         0x2B -> Dec16 (Direct16 HL) (Direct16 HL)
@@ -114,7 +122,7 @@ instruction = \byte ->
         0x2D -> Dec (Direct8 L) (Direct8 L)
         0x2E -> Load (Direct8 L) Immediate
         0x2F -> ComplementAccumulator
-        0x30 -> JumpRelative NotCarry
+        0x30 -> JumpRelative (Flag Carry Bool.false)
         0x31 -> Load16 (Direct16 SP) Immediate
         0x32 -> Load (Indirect HLPostDecrement) (Direct8 A)
         0x33 -> Inc16 (Direct16 SP) (Direct16 SP)
@@ -122,7 +130,7 @@ instruction = \byte ->
         0x35 -> Dec (Indirect HL) (Indirect HL)
         0x36 -> Load (Indirect HL) Immediate
         0x37 -> SetCarryFlag
-        0x38 -> JumpRelative Carry
+        0x38 -> JumpRelative (Flag Carry Bool.true)
         0x39 -> Add16 (Direct16 SP)
         0x3A -> Load (Direct8 A) (Indirect HLPostDecrement)
         0x3B -> Dec16 (Direct16 SP) (Direct16 SP)
@@ -258,35 +266,35 @@ instruction = \byte ->
         0xBD -> Compare (Direct8 L)
         0xBE -> Compare (Indirect HL)
         0xBF -> Compare (Direct8 A)
-        0xC0 -> Return NotZero
+        0xC0 -> Return (Flag Zero Bool.false)
         0xC1 -> Pop (Direct16 BC)
-        0xC2 -> JumpAbsolute NotZero Immediate
+        0xC2 -> JumpAbsolute (Flag Zero Bool.false) Immediate
         0xC3 -> JumpAbsolute Always Immediate
-        0xC4 -> Call NotZero
+        0xC4 -> Call (Flag Zero Bool.false)
         0xC5 -> Push (Direct16 BC)
         0xC6 -> Add Immediate
         0xC7 -> Restart 0x00
-        0xC8 -> Return Zero
+        0xC8 -> Return (Flag Zero Bool.true)
         0xC9 -> Return Always
-        0xCA -> JumpAbsolute Zero Immediate
+        0xCA -> JumpAbsolute (Flag Zero Bool.true) Immediate
         0xCB -> Prefix
-        0xCC -> Call Zero
+        0xCC -> Call (Flag Zero Bool.true)
         0xCD -> Call Always
         0xCE -> Adc Immediate
         0xCF -> Restart 0x08
-        0xD0 -> Return NotCarry
+        0xD0 -> Return (Flag Carry Bool.false)
         0xD1 -> Pop (Direct16 DE)
-        0xD2 -> JumpAbsolute NotCarry Immediate
+        0xD2 -> JumpAbsolute (Flag Carry Bool.false) Immediate
         0xD3 -> Illegal
-        0xD4 -> Call NotCarry
+        0xD4 -> Call (Flag Carry Bool.false)
         0xD5 -> Push (Direct16 DE)
         0xD6 -> Sub Immediate
         0xD7 -> Restart 0x10
-        0xD8 -> Return Carry
+        0xD8 -> Return (Flag Carry Bool.true)
         0xD9 -> ReturnAndEnableInterrupts
-        0xDA -> JumpAbsolute Carry Immediate
+        0xDA -> JumpAbsolute (Flag Carry Bool.true) Immediate
         0xDB -> Illegal
-        0xDC -> Call Carry
+        0xDC -> Call (Flag Carry Bool.true)
         0xDD -> Illegal
         0xDE -> Sbc Immediate
         0xDF -> Restart 0x18
