@@ -3,7 +3,7 @@ module [Instruction, instruction]
 import Cpu.Condition exposing [Condition]
 import Cpu.Register exposing [Type8, Type16]
 
-AddressMode : [
+AddressingMode : [
     Immediate,
     Direct8 Type8,
     Direct16 Type16,
@@ -38,27 +38,27 @@ Instruction : [
     RotateCircularAccumulator [Left, Right], # Rlca & Rrca
     RotateAccumulator [Left, Right], # Rla & Rra
     # 8-bit arithmetic / logical instructions
-    Add AddressMode,
-    Adc AddressMode, # Adc
-    Sub AddressMode,
-    Sbc AddressMode, # Sbc
-    And AddressMode,
-    Xor AddressMode,
-    Or AddressMode,
-    Compare AddressMode, # Cp
-    Inc AddressMode AddressMode,
-    Dec AddressMode AddressMode,
+    Add AddressingMode,
+    Adc AddressingMode, # Adc
+    Sub AddressingMode,
+    Sbc AddressingMode, # Sbc
+    And AddressingMode,
+    Xor AddressingMode,
+    Or AddressingMode,
+    Compare AddressingMode, # Cp
+    Inc AddressingMode AddressingMode,
+    Dec AddressingMode AddressingMode,
     # 16-bit arithmetic / logical instructions
-    Add16 AddressMode,
-    Dec16 AddressMode AddressMode,
-    Inc16 AddressMode AddressMode,
+    Add16 AddressingMode,
+    Dec16 AddressingMode AddressingMode,
+    Inc16 AddressingMode AddressingMode,
     AddSPSignedImmediate, # TODO
     # 8-bit load instructions
-    Load AddressMode AddressMode, # Ld
+    Load AddressingMode AddressingMode, # Ld
     # 16-bit load instructions
-    Load16 AddressMode AddressMode, # Ld
-    Push AddressMode,
-    Pop AddressMode,
+    Load16 AddressingMode AddressingMode, # Ld
+    Push AddressingMode,
+    Pop AddressingMode,
     LdHLSPPlusSignedImmediate, # TODO
     LdSPHL, # TODO
 ]
@@ -326,14 +326,14 @@ instruction = \byte ->
 
 # 8-bit shift, rotate and bit instructions
 Prefixed : [
-    Bit U8 AddressMode,
-    Reset U8 AddressMode AddressMode, # Res
-    Rotate [Left, Right] AddressMode AddressMode, # Rl & Rr
-    RotateCircular [Left, Right] AddressMode AddressMode, # Rlc & Rrc
-    Set U8 AddressMode AddressMode,
-    ShiftArithmetic [Left, Right] AddressMode AddressMode, # Sla & Sra
-    ShiftLogical [Right] AddressMode AddressMode, # Srl
-    Swap AddressMode AddressMode,
+    Bit U8 AddressingMode,
+    Reset U8 AddressingMode AddressingMode, # Res
+    Rotate [Left, Right] AddressingMode AddressingMode, # Rl & Rr
+    RotateCircular [Left, Right] AddressingMode AddressingMode, # Rlc & Rrc
+    Set U8 AddressingMode AddressingMode,
+    ShiftArithmetic [Left, Right] AddressingMode AddressingMode, # Sla & Sra
+    ShiftLogical [Right] AddressingMode AddressingMode, # Srl
+    Swap AddressingMode AddressingMode,
     Unknown,
 ]
 
