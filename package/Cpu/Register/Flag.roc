@@ -22,7 +22,7 @@ toBit = \member ->
 mask : Member -> U8
 mask = \member -> Bit.mask (toBit member)
 
-expect mask Zero == 0b1000_0000 # 0x80
+expect mask Zero == 0b1000_0000
 
 check : Member, U8 -> Bool
 check = \member, byte -> Bit.check (toBit member) byte

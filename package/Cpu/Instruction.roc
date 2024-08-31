@@ -1,4 +1,4 @@
-module [Instruction, instruction]
+module [Instruction, lookup]
 
 import Cpu.Register exposing [Type8, Type16]
 import Cpu.Register.Flag exposing [Member]
@@ -71,8 +71,8 @@ Instruction : [
     LdSPHL, # TODO
 ]
 
-instruction : U8 -> Instruction
-instruction = \byte ->
+lookup : U8 -> Instruction
+lookup = \byte ->
     when byte is
         0x00 -> Nop
         0x01 -> Load16 (Direct16 BC) Immediate
