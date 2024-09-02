@@ -1,50 +1,36 @@
-module [Register, Type8, Type16, init, read8, read16, write8, write16]
+module [Register, Type8, Type16, read8, read16, write8, write16]
 
 import Constant exposing [MemoryAddress]
 # 8-Bit and 16-Bit
 # A: Accumulator
-# F: Flags
+# F: Status (Commonly known as Flags)
 # SP: Stack Pointer
 # PC: Program Counter
 Type8 : [A, F, B, C, D, E, H, L]
 Type16 : [AF, BC, DE, HL, SP, PC]
 
 Register : {
+    programCounter : MemoryAddress,
+    stackPointer : MemoryAddress,
     af : MemoryAddress,
     bc : MemoryAddress,
     de : MemoryAddress,
     hl : MemoryAddress,
-    programCounter : MemoryAddress,
-    stackPointer : MemoryAddress,
     interruptMasterEnable : Bool, # IME
     halted : Bool,
     interruptFlag : U8,
     interruptEnable : U8,
 }
 
-init : Register
-init = {
-    af: 0x01B0,
-    bc: 0x13,
-    de: 0xD8,
-    hl: 0x014D,
-    programCounter: 0x0100,
-    stackPointer: 0xFFFE,
-    interruptMasterEnable: Bool.true,
-    halted: Bool.false,
-    interruptFlag: 0xE1,
-    interruptEnable: 0x00,
-}
-
 read16 : Type16 -> (Register -> U16)
 read16 = \type -> \reg ->
         when type is
+            PC -> reg.programCounter
+            SP -> reg.stackPointer
             AF -> reg.af
             BC -> reg.bc
             DE -> reg.de
             HL -> reg.hl
-            SP -> reg.stackPointer
-            PC -> reg.programCounter
 
 write16 : Type16, U16 -> (Register -> Register)
 write16 = \type, value -> \reg ->

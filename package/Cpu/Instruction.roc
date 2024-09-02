@@ -1,17 +1,18 @@
 ## Gameboy CPU (LR35902) instruction set
 # https://www.pastraiser.com/cpu/gameboy/gameboy_opcodes.html
+# https://gbdev.io/gb-opcodes/optables/
 module [Instruction, lookup]
 
 import Cpu.Register exposing [Type8, Type16]
-import Cpu.Register.Flag exposing [Member]
+import Cpu.Register.Status exposing [Member]
 
-Condition : [Always, Flag Member Bool]
+Condition : [Always, Status Member Bool]
 
 checkCondition : Condition, U8 -> Bool
 checkCondition = \condition, flag ->
     when condition is
         Always -> Bool.true
-        Flag member value -> Cpu.Register.Flag.check member flag == value
+        Status member value -> Cpu.Register.Status.check member flag == value
 
 AddressingMode : [
     Immediate,
@@ -20,34 +21,29 @@ AddressingMode : [
     Indirect [C, BC, DE, HL, HLPostDecrement, HLPostIncrement, Word8Operand, Word16Operand],
 ]
 
-## https://gbdev.io/gb-opcodes/optables/
-
 Instruction : [
     # Other
+    Prefix,
     Illegal,
     Unknown,
     # Misc / control instructions
     Nop,
-    Prefix,
     Halt,
-    DisableInterrupts, # Di
-    EnableInterrupts, # Ei
+    Interrupts [Enable, Disable], # (Ei, Di)
+    CarryFlag [Set, Complement], # (Scf, Ccf) # Set or toggle the carry flag
     DecimalAdjustAccumulator, # Daa
     ComplementAccumulator, # Cpl # Flip all bits from the flags register
-    SetCarryFlag, # Scf
-    ComplementCarryFlag, # Ccf # Toggle / flip the carry flag
     # Jumps / calls
+    Jump Condition [Immediate], # Jp
+    Branch Condition, # Jr (I renamed jump relative to branch)
     Call Condition,
-    JumpRelative Condition, # Jr
-    JumpAbsolute Condition [Immediate], # Jp
     Return Condition, # Ret
     ReturnAndEnableInterrupts, # Reti
     Restart U8, # Rst
-    JpIndirectHL, # TODO
-    # 8-bit shift, rotate and bit instructions
+    # 8-bit shift, rotate and bit
     RotateCircularAccumulator [Left, Right], # Rlca & Rrca
     RotateAccumulator [Left, Right], # Rla & Rra
-    # 8-bit arithmetic / logical instructions
+    # 8-bit arithmetic / logical
     Or AddressingMode,
     And AddressingMode,
     Xor AddressingMode,
@@ -58,24 +54,25 @@ Instruction : [
     Compare AddressingMode, # Cp
     Inc AddressingMode AddressingMode,
     Dec AddressingMode AddressingMode,
-    # 16-bit arithmetic / logical instructions
+    # 16-bit arithmetic / logical
     Add16 AddressingMode,
     Dec16 AddressingMode AddressingMode,
     Inc16 AddressingMode AddressingMode,
-    AddSPSignedImmediate, # TODO
-    # 8-bit load instructions
+    # 8-bit load
     Load AddressingMode AddressingMode, # Ld
-    # 16-bit load instructions
+    # 16-bit load
     Load16 AddressingMode AddressingMode, # Ld
+    # Stack
     Push AddressingMode,
     Pop AddressingMode,
-    LdHLSPPlusSignedImmediate, # TODO
-    LdSPHL, # TODO
+    # TODO
+    AddSPSignedImmediate,
+    LdHLSPPlusSignedImmediate,
+    LdSPHL,
+    JpIndirectHL,
 ]
 
-Generated : [Adc [Direct8 [A, B, C, D, E, H, L], Immediate, Indirect [HL]], Add [Direct8 [A, B, C, D, E, H, L], Immediate, Indirect [HL]], Add16 [Direct16 [BC, DE, HL, SP]], AddSPSignedImmediate, And [Direct8 [A, B, C, D, E, H, L], Immediate, Indirect [HL]], Call [Always, Flag [Carry, Zero] Bool], Compare [Direct8 [A, B, C, D, E, H, L], Immediate, Indirect [HL]], ComplementAccumulator, ComplementCarryFlag, Dec [Direct8 [A, B, C, D, E, H, L], Indirect [HL]] [Direct8 [A, B, C, D, E, H, L], Indirect [HL]], Dec16 [Direct16 [BC, DE, HL, SP]] [Direct16 [BC, DE, HL, SP]], DecimalAdjustAccumulator, DisableInterrupts, EnableInterrupts, Halt, Illegal, Inc [Direct8 [A, B, C, D, E, H, L], Indirect [HL]] [Direct8 [A, B, C, D, E, H, L], Indirect [HL]], Inc16 [Direct16 [BC, DE, HL, SP]] [Direct16 [BC, DE, HL, SP]], JpIndirectHL, JumpAbsolute [Always, Flag [Carry, Zero] Bool] [Immediate], JumpRelative [Always, Flag [Carry, Zero] Bool], LdHLSPPlusSignedImmediate, LdSPHL, Load [Direct8 [A, B, C, D, E, H, L], Indirect [BC, C, DE, HL, HLPostDecrement, HLPostIncrement, Word16Operand, Word8Operand]] [Direct8 [A, B, C, D, E, H, L], Immediate, Indirect [BC, C, DE, HL, HLPostDecrement, HLPostIncrement, Word16Operand, Word8Operand]], Load16 [Direct16 [BC, DE, HL, SP], Indirect [Word16Operand]] [Direct16 [SP], Immediate], Nop, Or [Direct8 [A, B, C, D, E, H, L], Immediate, Indirect [HL]], Pop [Direct16 [AF, BC, DE, HL]], Prefix, Push [Direct16 [AF, BC, DE, HL]], Restart U8, Return [Always, Flag [Carry, Zero] Bool], ReturnAndEnableInterrupts, RotateAccumulator [Left, Right], RotateCircularAccumulator [Left, Right], Sbc [Direct8 [A, B, C, D, E, H, L], Immediate, Indirect [HL]], SetCarryFlag, Sub [Direct8 [A, B, C, D, E, H, L], Immediate, Indirect [HL]], Unknown, Xor [Direct8 [A, B, C, D, E, H, L], Immediate, Indirect [HL]]]
-
-lookup : U8 -> Generated
+lookup : U8 -> Instruction
 lookup = \byte ->
     when byte is
         0x00 -> Nop
@@ -275,26 +272,26 @@ lookup = \byte ->
         0x11 -> Load16 (Direct16 DE) Immediate
         0x21 -> Load16 (Direct16 HL) Immediate
         0x31 -> Load16 (Direct16 SP) Immediate
-        0xC3 -> JumpAbsolute Always Immediate
-        0xC2 -> JumpAbsolute (Flag Zero Bool.false) Immediate
-        0xCA -> JumpAbsolute (Flag Zero Bool.true) Immediate
-        0xD2 -> JumpAbsolute (Flag Carry Bool.false) Immediate
-        0xDA -> JumpAbsolute (Flag Carry Bool.true) Immediate
-        0x18 -> JumpRelative Always
-        0x20 -> JumpRelative (Flag Zero Bool.false)
-        0x28 -> JumpRelative (Flag Zero Bool.true)
-        0x30 -> JumpRelative (Flag Carry Bool.false)
-        0x38 -> JumpRelative (Flag Carry Bool.true)
+        0xC3 -> Jump Always Immediate
+        0xC2 -> Jump (Status Zero Bool.false) Immediate
+        0xCA -> Jump (Status Zero Bool.true) Immediate
+        0xD2 -> Jump (Status Carry Bool.false) Immediate
+        0xDA -> Jump (Status Carry Bool.true) Immediate
+        0x18 -> Branch Always
+        0x20 -> Branch (Status Zero Bool.false)
+        0x28 -> Branch (Status Zero Bool.true)
+        0x30 -> Branch (Status Carry Bool.false)
+        0x38 -> Branch (Status Carry Bool.true)
         0xCD -> Call Always
-        0xC4 -> Call (Flag Zero Bool.false)
-        0xCC -> Call (Flag Zero Bool.true)
-        0xD4 -> Call (Flag Carry Bool.false)
-        0xDC -> Call (Flag Carry Bool.true)
+        0xC4 -> Call (Status Zero Bool.false)
+        0xCC -> Call (Status Zero Bool.true)
+        0xD4 -> Call (Status Carry Bool.false)
+        0xDC -> Call (Status Carry Bool.true)
         0xC9 -> Return Always
-        0xC0 -> Return (Flag Zero Bool.false)
-        0xC8 -> Return (Flag Zero Bool.true)
-        0xD0 -> Return (Flag Carry Bool.false)
-        0xD8 -> Return (Flag Carry Bool.true)
+        0xC0 -> Return (Status Zero Bool.false)
+        0xC8 -> Return (Status Zero Bool.true)
+        0xD0 -> Return (Status Carry Bool.false)
+        0xD8 -> Return (Status Carry Bool.true)
         0xD9 -> ReturnAndEnableInterrupts
         0xC1 -> Pop (Direct16 BC)
         0xD1 -> Pop (Direct16 DE)
@@ -305,12 +302,12 @@ lookup = \byte ->
         0xE5 -> Push (Direct16 HL)
         0xF5 -> Push (Direct16 AF)
         0xCB -> Prefix
-        0xF3 -> DisableInterrupts
-        0xFB -> EnableInterrupts
+        0xF3 -> Interrupts Disable
+        0xFB -> Interrupts Enable
         0x27 -> DecimalAdjustAccumulator
         0x2F -> ComplementAccumulator
-        0x37 -> SetCarryFlag
-        0x3F -> ComplementCarryFlag
+        0x37 -> CarryFlag Set
+        0x3F -> CarryFlag Complement
         0xC7 -> Restart 0x00
         0xCF -> Restart 0x08
         0xD7 -> Restart 0x10
@@ -340,10 +337,10 @@ lookup = \byte ->
 # 8-bit shift, rotate and bit instructions
 Prefixed : [
     Bit U8 AddressingMode,
+    Set U8 AddressingMode AddressingMode,
     Reset U8 AddressingMode AddressingMode, # Res
     Rotate [Left, Right] AddressingMode AddressingMode, # Rl & Rr
     RotateCircular [Left, Right] AddressingMode AddressingMode, # Rlc & Rrc
-    Set U8 AddressingMode AddressingMode,
     ShiftArithmetic [Left, Right] AddressingMode AddressingMode, # Sla & Sra
     ShiftLogical [Right] AddressingMode AddressingMode, # Srl
     Swap AddressingMode AddressingMode,

@@ -2,7 +2,7 @@ module [Member, mask, modify, check, setAll]
 
 import Bit exposing [Bit]
 
-## Flag register
+## Status register (commonly known as Flags register)
 ## 0b1111_0000
 ##   ││││ ╰┴┴┴─ Unused
 ##   │││╰─ Carry
@@ -29,7 +29,7 @@ check = \member, byte -> Bit.check (toBit member) byte
 
 expect check Carry 0b0001_0000 == Bool.true
 
-Delta : [Unchanged, Complemented, Value Bool]
+Delta : [Complement, Value Bool]
 
 modify : Delta, Delta, Delta, Delta -> (U8 -> U8)
 modify = \z, n, h, c -> \byte ->
@@ -46,8 +46,7 @@ resolveDelta : Delta, Member, U8 -> U8
 resolveDelta = \delta, member, byte ->
     m = mask member
     when delta is
-        Unchanged -> Num.bitwiseAnd m byte
-        Complemented ->
+        Complement ->
             when Num.bitwiseAnd m byte is
                 0x00 -> m
                 _ -> 0x00
