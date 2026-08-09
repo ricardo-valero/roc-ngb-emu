@@ -7,10 +7,12 @@ import /Cpu/Instruction
 import /Cpu/Register
 import /Cpu/Register/Status
 import /Mmu
+import /Ppu
 
 GameBoy := {
     reg : Register,
     mmu : Mmu,
+    ppu : Ppu,
     ime : Bool,
     halted : Bool,
     ei_pending : Bool,
@@ -21,6 +23,7 @@ GameBoy := {
         gb = {
             reg: Register.init({}),
             mmu: Mmu.init(rom),
+            ppu: Ppu.init({}),
             ime: Bool.False,
             halted: Bool.False,
             ei_pending: Bool.False,
@@ -30,6 +33,29 @@ GameBoy := {
 
     serial : GameBoy -> List(U8)
     serial = |gb| gb.mmu.serial()
+
+    framebuffer : GameBoy -> List(U8)
+    framebuffer = |gb| gb.ppu.frame()
+
+    # Run until the next VBlank entry (LY reaching 144), bounded so a wedged
+    # ROM cannot hang the caller. A frame is ~17.6k steps even when halted.
+    run_frame : GameBoy -> GameBoy
+    run_frame = |gb0| {
+        var gb = gb0
+        var budget = 40000.U64
+        var vblank_seen = Bool.False
+        while budget > 0 and vblank_seen == Bool.False {
+            was_ly = gb.mmu.read(0xFF44)
+            gb = match gb.step() { (g, _) => g }
+            if was_ly != 144 and gb.mmu.read(0xFF44) == 144 {
+                vblank_seen = Bool.True
+            } else {
+                {}
+            }
+            budget = budget.minus(1)
+        }
+        gb
+    }
 
     step : GameBoy -> (GameBoy, U64)
     step = |gb| {
@@ -48,9 +74,12 @@ GameBoy := {
         }
     }
 
-    # Every path leaves through here so the timer sees all elapsed cycles
+    # Every path leaves through here so the timer and PPU see all elapsed cycles
     finish : GameBoy, U64 -> (GameBoy, U64)
-    finish = |gb, cycles| ({ ..gb, mmu: gb.mmu.tick(cycles) }, cycles)
+    finish = |gb, cycles| {
+        r = gb.ppu.tick(gb.mmu.tick(cycles), cycles)
+        ({ ..gb, mmu: r.mmu, ppu: r.ppu }, cycles)
+    }
 
     dispatch : GameBoy, U8 -> (GameBoy, U64)
     dispatch = |gb, pending| {
@@ -482,4 +511,13 @@ expect {
     g1 = after_step(GameBoy.init(rom_with(code)))
     g2 = after_step(g1)
     g1.reg.read16(ProgramCounter) == 0x0110 and g2.reg.read16(ProgramCounter) == 0x0103
+}
+
+# Frame stepping: returns at VBlank entry with a full framebuffer of shades
+expect {
+    gb = GameBoy.init(rom_with([0x18, 0xFE])).run_frame() # JR -2: tight loop
+    fb = gb.framebuffer()
+    gb.mmu.read(0xFF44) == 144
+    and fb.len() == 23040
+    and fb.fold(Bool.True, |ok, shade| ok and shade <= 3)
 }
