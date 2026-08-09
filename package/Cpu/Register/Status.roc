@@ -1,64 +1,73 @@
-module [Member, mask, modify, check, setAll]
+import /Bit exposing [Bit]
 
-import Bit exposing [Bit]
+Status :: [].{
+    ## Status register (commonly known as Flags register)
+    ## 0b1111_0000
+    ##   ││││ ╰┴┴┴─ Unused
+    ##   │││╰─ Carry
+    ##   ││╰── Half carry
+    ##   │╰─── Subtract
+    ##   ╰──── Zero
+    Member := [Zero, Subtract, HalfCarry, Carry]
 
-## Status register (commonly known as Flags register)
-## 0b1111_0000
-##   ││││ ╰┴┴┴─ Unused
-##   │││╰─ Carry
-##   ││╰── Half carry
-##   │╰─── Subtract
-##   ╰──── Zero
-Member : [Zero, Subtract, HalfCarry, Carry]
+    Delta := [Complement, Unchanged, Value(Bool)]
 
-toBit : Member -> Bit
-toBit = \member ->
-    when member is
-        Zero -> B7
-        Subtract -> B6
-        HalfCarry -> B5
-        Carry -> B4
+    to_bit : Member -> Bit
+    to_bit = |member|
+        match member {
+            Zero => B7
+            Subtract => B6
+            HalfCarry => B5
+            Carry => B4
+        }
 
-mask : Member -> U8
-mask = \member -> Bit.mask (toBit member)
+    mask : Member -> U8
+    mask = |member| Bit.mask(to_bit(member))
 
-expect mask Zero == 0b1000_0000
+    check : Member, U8 -> Bool
+    check = |member, byte| Bit.check(to_bit(member), byte)
 
-check : Member, U8 -> Bool
-check = \member, byte -> Bit.check (toBit member) byte
-
-expect check Carry 0b0001_0000 == Bool.true
-
-Delta : [Complement, Value Bool]
-
-modify : Delta, Delta, Delta, Delta -> (U8 -> U8)
-modify = \z, n, h, c -> \byte ->
+    modify : Delta, Delta, Delta, Delta -> (U8 -> U8)
+    modify = |z, n, h, c| |byte|
         [
             (z, Zero),
             (n, Subtract),
             (h, HalfCarry),
             (c, Carry),
         ]
-        |> List.map (\(d, member) -> resolveDelta d member byte)
-        |> List.walk 0x00 Num.bitwiseOr
+            .map(|(d, member)| resolve_delta(d, member, byte))
+            .fold(0x00, U8.bitwise_or)
 
-resolveDelta : Delta, Member, U8 -> U8
-resolveDelta = \delta, member, byte ->
-    m = mask member
-    when delta is
-        Complement ->
-            when Num.bitwiseAnd m byte is
-                0x00 -> m
-                _ -> 0x00
+    resolve_delta : Delta, Member, U8 -> U8
+    resolve_delta = |delta, member, byte| {
+        m = mask(member)
+        match delta {
+            Complement =>
+                match m.bitwise_and(byte) {
+                    0x00 => m
+                    _ => 0x00
+                }
 
-        Value b ->
-            if b then
-                m
-            else
-                0x00
+            Unchanged => m.bitwise_and(byte)
+            Value(b) =>
+                if b {
+                    m
+                } else {
+                    0x00
+                }
+        }
+    }
 
-setAll : Bool, Bool, Bool, Bool -> U8
-setAll = \z, n, h, c -> (modify (Value z) (Value n) (Value h) (Value c)) 0
+    set_all : Bool, Bool, Bool, Bool -> U8
+    set_all = |z, n, h, c| {
+        f = modify(Value(z), Value(n), Value(h), Value(c))
+        f(0)
+    }
+}
 
-expect setAll Bool.true Bool.true Bool.true Bool.true == 0b1111_0000
-expect setAll Bool.true Bool.false Bool.false Bool.true == 0b1001_0000
+expect Status.mask(Zero) == 0b1000_0000
+
+expect Status.check(Carry, 0b0001_0000) == Bool.True
+
+expect Status.set_all(Bool.True, Bool.True, Bool.True, Bool.True) == 0b1111_0000
+expect Status.set_all(Bool.True, Bool.False, Bool.False, Bool.True) == 0b1001_0000

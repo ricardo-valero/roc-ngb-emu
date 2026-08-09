@@ -8,6 +8,16 @@ Run to get cartridge info:
 roc run examples/cartridge.roc -- <rom-path>.gb
 ```
 
+Development uses the new (Zig-based) Roc compiler, pinned via the Nix flake:
+
+```bash
+nix develop                   # shell with roc nightly + nixd
+roc check package/main.roc    # type-check the package
+roc test package/main.roc     # run all inline expects
+```
+
+The pre-migration code (2024 Roc syntax and toolchain) lives on the `legacy` branch.
+
 Get in touch and let's work on this together!
 
 I'm using these resources:
