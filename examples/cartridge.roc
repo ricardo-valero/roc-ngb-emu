@@ -1,34 +1,36 @@
-app [main] {
-    cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.13.0/nW9yMRtZuCYf1Oa9vbE5XoirMwzLbtoSgv7NGhUlqYA.tar.br",
+app [main!] {
+    pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.21.0/4rAQg8kUYZ3Vksr4qMQHpaFYNiHSn9GgS7gVxghd1XYV.tar.zst",
     ngb: "../package/main.roc",
 }
 
-import cli.Stdout
-import cli.Path
-import cli.Arg
-import cli.Task exposing [Task]
-import ngb.Cartridge.Header
+import pf.OsStr
+import pf.Path
+import pf.Stdout
+import ngb.Header
 
-readArgFilePath : Task.Task Path.Path _
-readArgFilePath =
-    args = Arg.list! {}
-    when args is
-        [_, pathStr, ..] -> Task.ok (Path.fromStr pathStr)
-        _ -> Task.err (FailedToReadArgs "expected path argument")
+main! : List(OsStr) => Try({}, _)
+main! = |args| {
+    rom_path = read_arg_file_path(args)?
+    # rom_path2 = rom_path.join("gb") # or gbc
+    is_file = rom_path.is_file!()?
+    cart = cart_load!(rom_path)?
+    if is_file {
+        # Stdout.line!("File with path: ${rom_path.display()}")?
+        Stdout.line!("Header: ${Str.inspect(cart)}")?
+    } else {
+        Stdout.line!("Invalid file")?
+    }
+    Ok({})
+}
 
-main = run |> Task.onErr \err -> crash "ERROR: $(Inspect.toStr err)"
+read_arg_file_path : List(OsStr) -> Try(Path, [FailedToReadArgs(Str), ..])
+read_arg_file_path = |args|
+    match args {
+        [_, path_arg, ..] => Ok(Path.from_os_str(path_arg))
+        _ => Err(FailedToReadArgs("expected path argument"))
+    }
 
-run =
-    romPath = readArgFilePath!
-    # romPath2 = Path.withExtension romPath "gb" # or gbc
-    isFile = Path.isFile! romPath
-    cart = cartLoad! romPath
-    if isFile then
-        # Stdout.line "File with path: $(Inspect.toStr romPath)"
-        Stdout.line "Header: $(Inspect.toStr cart)"
-    else
-        Stdout.line "Invalid file"
-
-cartLoad = \path ->
-    romData = Path.readBytes! path
-    Task.ok (Cartridge.Header.read romData)
+cart_load! = |path| {
+    rom_data = path.read_bytes!()?
+    Ok(Header.read(rom_data))
+}
