@@ -2,20 +2,23 @@
 
 A Game Boy (DMG) emulator written in [Roc](https://www.roc-lang.org). WIP!
 
-**Status:** the SM83 CPU core is complete and passes all 11 of Blargg's
-`cpu_instrs` test ROMs (full base + CB instruction set, hardware-correct
-flags, interrupts, timer, serial). Next up: PPU.
+**Status:** the SM83 CPU core passes all 11 of Blargg's `cpu_instrs` test
+ROMs, and the PPU renders [dmg-acid2](https://github.com/mattcurrie/dmg-acid2)
+pixel-perfect against the reference image (background, window, sprites,
+scanline timing, VBlank/STAT interrupts). Next up: roc-ray play app with
+joypad input.
 
-Run the Blargg verification suite (fetches the test ROMs on first run):
+Run the verification suites (test ROMs are fetched on first run):
 
 ```bash
-nix run .#run-blargg          # or plain `run-blargg` inside `nix develop`
+nix run .#run-blargg          # CPU: Blargg cpu_instrs, 11 ROMs
+nix run .#check-acid2         # PPU: dmg-acid2 vs frozen reference digest
 ```
 
-Run a single test ROM or inspect a cartridge header:
+Dump any ROM's screen to an image, or inspect a cartridge header:
 
 ```bash
-roc run example/blargg.roc -- rom/cpu_instrs/06-ld\ r,r.gb
+roc run example/frame.roc -- rom/dmg-acid2.gb out.ppm 120
 roc run example/cartridge.roc -- <rom-path>.gb
 ```
 

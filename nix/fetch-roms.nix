@@ -32,6 +32,13 @@ writeShellApplication {
         curl -fsSL "$base/''${rom// /%20}" -o "$dir/$rom"
       fi
     done
-    echo "ROMs ready in $dir"
+
+    # dmg-acid2: PPU rendering oracle (MIT, mattcurrie/dmg-acid2)
+    acid="$PWD/rom/dmg-acid2.gb"
+    if [ ! -f "$acid" ]; then
+      echo "fetching dmg-acid2.gb"
+      curl -fsSL "https://github.com/mattcurrie/dmg-acid2/releases/download/v1.0/dmg-acid2.gb" -o "$acid"
+    fi
+    echo "ROMs ready in $PWD/rom"
   '';
 }

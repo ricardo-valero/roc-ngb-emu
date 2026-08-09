@@ -17,8 +17,7 @@ Mmu := {
             .concat(List.repeat(0, 0x10000 - rom_len))
         base : Mmu
         base = { mem: mem, serial_out: [], div_counter: 0, tima_counter: 0 }
-        # DMG post-boot IO state (subset relevant to CPU test ROMs).
-        # LY reads 0x90 so ROMs polling for VBlank make progress without a PPU.
+        # DMG post-boot IO state. LY starts at 0; the PPU advances it for real.
         [
             (0xFF00, 0xCF), # P1/JOYP: no buttons pressed
             (0xFF02, 0x7E), # SC
@@ -26,8 +25,7 @@ Mmu := {
             (0xFF07, 0xF8), # TAC
             (0xFF0F, 0xE1), # IF
             (0xFF40, 0x91), # LCDC
-            (0xFF41, 0x85), # STAT
-            (0xFF44, 0x90), # LY (stubbed to VBlank line)
+            (0xFF41, 0x86), # STAT: line 0, mode 2, LY=LYC
             (0xFF47, 0xFC), # BGP
         ]
             .fold(base, |mmu, (addr, value)| mmu.poke(addr, value))
@@ -59,6 +57,22 @@ Mmu := {
             }
         } else if addr == 0xFF04 {
             { ..mmu, div_counter: 0 }.poke(addr, 0x00) # DIV: any write resets
+        } else if addr == 0xFF46 {
+            # OAM DMA: instant 160-byte copy from value<<8 (games spin in HRAM
+            # during the real transfer, so zero-time is invisible to them)
+            src = value.to_u16().shl_wrap(8)
+            var m = mmu.poke(addr, value)
+            var i = 0.U16
+            while i < 0xA0 {
+                m = m.poke(U16.plus(0xFE00, i), m.read(src.plus(i)))
+                i = i.plus(1)
+            }
+            m
+        } else if addr == 0xFF41 {
+            # STAT: bits 0-2 are hardware status, games only write the enables
+            mmu.poke(addr, value.bitwise_and(0xF8).bitwise_or(mmu.read(addr).bitwise_and(0x07)))
+        } else if addr == 0xFF44 {
+            mmu # LY is read-only
         } else {
             mmu.poke(addr, value)
         }
@@ -147,3 +161,15 @@ expect {
 }
 # Timer disabled: TIMA holds still
 expect Mmu.init(test_rom).write(0xFF07, 0x00).write(0xFF05, 0x10).tick(4096).read(0xFF05) == 0x10
+
+# OAM DMA: sprite table prepared in WRAM lands in OAM
+expect {
+    var m = Mmu.init(test_rom)
+    var i = 0.U16
+    while i < 0xA0 {
+        m = m.write(U16.plus(0xC000, i), i.to_u8_wrap().bitwise_or(0x40))
+        i = i.plus(1)
+    }
+    m = m.write(0xFF46, 0xC0)
+    m.read(0xFE00) == 0x40 and m.read(0xFE9F) == 0xDF
+}

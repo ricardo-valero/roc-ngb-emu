@@ -22,6 +22,10 @@
         inherit (self-pkgs) fetch-roms;
         roc = roc-pkgs.nightly;
       };
+      check-acid2 = pkgs.callPackage ./nix/check-acid2.nix {
+        inherit (self-pkgs) fetch-roms;
+        roc = roc-pkgs.nightly;
+      };
     });
     devShells = nixpkgs.lib.genAttrs systems (system: let
       pkgs = nixpkgs.legacyPackages.${system};
@@ -32,7 +36,7 @@
         buildInputs = builtins.attrValues {
           inherit (pkgs) nixd alejandra;
           inherit (roc-pkgs) nightly;
-          inherit (self-pkgs) fetch-roms run-blargg;
+          inherit (self-pkgs) fetch-roms run-blargg check-acid2;
         };
       };
     });
