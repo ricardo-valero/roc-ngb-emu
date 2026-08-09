@@ -4,10 +4,17 @@
 
 Mmu := {
     mem : List(U8),
+    rom : List(U8), # full cartridge image, bank-mapped on read
+    cart_ram : List(U8), # 32 KiB external RAM, session lifetime
     serial_out : List(U8),
     div_counter : U64,
     tima_counter : U64,
     buttons : { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool },
+    mbc : [None, Mbc1, Mbc3],
+    rom_bank : U8, # raw register value; 0->1 translation happens at read
+    bank2 : U8, # MBC1 secondary register / MBC3 RAM bank (or RTC select)
+    mode : Bool, # MBC1 banking mode
+    ram_enable : Bool,
 }.{
     no_buttons : {} -> { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool }
     no_buttons = |_| {
@@ -21,15 +28,32 @@ Mmu := {
         select: Bool.False,
     }
 
-    # No MBC banking: individual Blargg cpu_instrs ROMs fit in 32 KiB
     init : List(U8) -> Mmu
     init = |rom| {
-        rom_len = if rom.len() > 0x8000 { 0x8000 } else { rom.len() }
-        mem = rom
-            .sublist({ start: 0, len: rom_len })
-            .concat(List.repeat(0, 0x10000 - rom_len))
+        type_byte = rom.get(0x0147) ?? 0x00
+        mbc =
+            if type_byte >= 0x01 and type_byte <= 0x03 {
+                Mbc1
+            } else if type_byte >= 0x0F and type_byte <= 0x13 {
+                Mbc3
+            } else {
+                None
+            }
         base : Mmu
-        base = { mem: mem, serial_out: [], div_counter: 0, tima_counter: 0, buttons: no_buttons({}) }
+        base = {
+            mem: List.repeat(0, 0x10000),
+            rom: rom,
+            cart_ram: List.repeat(0, 0x8000),
+            serial_out: [],
+            div_counter: 0,
+            tima_counter: 0,
+            buttons: no_buttons({}),
+            mbc: mbc,
+            rom_bank: 1,
+            bank2: 0,
+            mode: Bool.False,
+            ram_enable: Bool.False,
+        }
         # DMG post-boot IO state. LY starts at 0; the PPU advances it for real.
         [
             (0xFF00, 0xCF), # P1/JOYP: no buttons pressed
@@ -46,10 +70,83 @@ Mmu := {
 
     read : Mmu, U16 -> U8
     read = |mmu, addr|
-        if addr == 0xFF00 {
+        if addr < 0x4000 {
+            mmu.rom.get(zero_region_base(mmu).shl_wrap(14).plus(addr.to_u64())) ?? 0xFF
+        } else if addr < 0x8000 {
+            mmu.rom.get(switch_region_bank(mmu).shl_wrap(14).plus(addr.to_u64().minus(0x4000))) ?? 0xFF
+        } else if addr >= 0xA000 and addr < 0xC000 {
+            read_cart_ram(mmu, addr)
+        } else if addr == 0xFF00 {
             read_p1(mmu)
         } else {
             mmu.mem.get(addr.to_u64()) ?? 0xFF
+        }
+
+    bank_count : Mmu -> U64
+    bank_count = |mmu| {
+        n = mmu.rom.len().shr_zf_wrap(14)
+        if n == 0 { 1 } else { n }
+    }
+
+    # Effective bank for 0x4000-0x7FFF; the raw register's zero maps to 1
+    # before combining, and the result wraps to the ROM's actual bank count
+    # the way real cartridge address wiring does.
+    switch_region_bank : Mmu -> U64
+    switch_region_bank = |mmu|
+        match mmu.mbc {
+            None => 1
+            Mbc1 => {
+                low5 = mmu.rom_bank.bitwise_and(0x1F)
+                low = if low5 == 0x00 { 1 } else { low5.to_u64() }
+                mmu.bank2.bitwise_and(0x03).to_u64().shl_wrap(5).plus(low) % bank_count(mmu)
+            }
+
+            Mbc3 => {
+                b = mmu.rom_bank.bitwise_and(0x7F)
+                (if b == 0x00 { 1 } else { b.to_u64() }) % bank_count(mmu)
+            }
+        }
+
+    # 0x0000-0x3FFF is bank 0 except MBC1 mode 1, where bank2 maps it
+    zero_region_base : Mmu -> U64
+    zero_region_base = |mmu|
+        match mmu.mbc {
+            Mbc1 =>
+                if mmu.mode {
+                    mmu.bank2.bitwise_and(0x03).to_u64().shl_wrap(5) % bank_count(mmu)
+                } else {
+                    0
+                }
+
+            _ => 0
+        }
+
+    # MBC1 banks RAM by bank2 in mode 1 only; MBC3 by bank2 values 0-3
+    # (RTC selects 0x08+ read as 0 and drop writes); None is ungated bank 0.
+    cart_ram_slot : Mmu -> [Bank(U64), Invalid]
+    cart_ram_slot = |mmu|
+        match mmu.mbc {
+            None => Bank(0)
+            Mbc1 =>
+                if mmu.ram_enable {
+                    if mmu.mode { Bank(mmu.bank2.bitwise_and(0x03).to_u64()) } else { Bank(0) }
+                } else {
+                    Invalid
+                }
+
+            Mbc3 =>
+                if mmu.ram_enable and mmu.bank2 <= 0x03 {
+                    Bank(mmu.bank2.to_u64())
+                } else {
+                    Invalid
+                }
+        }
+
+    read_cart_ram : Mmu, U16 -> U8
+    read_cart_ram = |mmu, addr|
+        match cart_ram_slot(mmu) {
+            Bank(b) => mmu.cart_ram.get(b.shl_wrap(13).plus(addr.to_u64().minus(0xA000))) ?? 0xFF
+            Invalid => 0xFF
         }
 
     set_buttons = |mmu, buttons| { ..mmu, buttons: buttons }
@@ -87,7 +184,12 @@ Mmu := {
     write : Mmu, U16, U8 -> Mmu
     write = |mmu, addr, value|
         if addr < 0x8000 {
-            mmu # cartridge ROM: writes ignored (MBC banking out of scope)
+            write_mbc(mmu, addr, value)
+        } else if addr >= 0xA000 and addr < 0xC000 {
+            match cart_ram_slot(mmu) {
+                Bank(b) => { ..mmu, cart_ram: mmu.cart_ram.set(b.shl_wrap(13).plus(addr.to_u64().minus(0xA000)), value) ?? mmu.cart_ram }
+                Invalid => mmu
+            }
         } else if addr == 0xFF02 {
             # Serial control: bit 7 starts a transfer; capture SB as the
             # Blargg reporting channel and mark the transfer complete
@@ -119,6 +221,34 @@ Mmu := {
             mmu # LY is read-only
         } else {
             mmu.poke(addr, value)
+        }
+
+    # MBC register writes land in the ROM address range
+    write_mbc : Mmu, U16, U8 -> Mmu
+    write_mbc = |mmu, addr, value|
+        match mmu.mbc {
+            None => mmu
+            Mbc1 =>
+                if addr < 0x2000 {
+                    { ..mmu, ram_enable: value.bitwise_and(0x0F) == 0x0A }
+                } else if addr < 0x4000 {
+                    { ..mmu, rom_bank: value.bitwise_and(0x1F) }
+                } else if addr < 0x6000 {
+                    { ..mmu, bank2: value.bitwise_and(0x03) }
+                } else {
+                    { ..mmu, mode: value.bitwise_and(0x01) == 0x01 }
+                }
+
+            Mbc3 =>
+                if addr < 0x2000 {
+                    { ..mmu, ram_enable: value.bitwise_and(0x0F) == 0x0A }
+                } else if addr < 0x4000 {
+                    { ..mmu, rom_bank: value.bitwise_and(0x7F) }
+                } else if addr < 0x6000 {
+                    { ..mmu, bank2: value }
+                } else {
+                    mmu # RTC latch: ignored
+                }
         }
 
     request_interrupt : Mmu, U8 -> Mmu
@@ -174,7 +304,7 @@ test_rom = List.repeat(0x99, 0x200)
 
 # ROM loads at 0x0000 and is read-only
 expect Mmu.init(test_rom).read(0x01FF) == 0x99
-expect Mmu.init(test_rom).read(0x0200) == 0x00
+expect Mmu.init(test_rom).read(0x0200) == 0xFF # past the image: open bus
 expect Mmu.init(test_rom).write(0x01FF, 0x55).read(0x01FF) == 0x99
 
 # Work RAM and HRAM round-trip
@@ -236,3 +366,59 @@ expect {
     m = Mmu.init(test_rom).set_buttons({ ..Mmu.no_buttons({}), a: Bool.True, down: Bool.True }).write(0xFF00, 0x30)
     m.read(0xFF00).bitwise_and(0x0F) == 0x0F
 }
+
+# --- MBC banking ---
+
+set_byte : List(U8), U64, U8 -> List(U8)
+set_byte = |l, i, v| l.set(i, v) ?? l
+
+# 64-bank (1 MiB) image: first byte of each bank is the bank number
+big_rom : U8 -> List(U8)
+big_rom = |type_byte| {
+    var r = List.repeat(0x00, 0x4000 * 64)
+    var b = 0.U64
+    while b < 64 {
+        r = set_byte(r, b.shl_wrap(14), b.to_u8_wrap())
+        b = b.plus(1)
+    }
+    set_byte(r, 0x0147, type_byte)
+}
+
+# MBC1: default window is bank 1; 0x2000 write switches; raw 0 maps to 1
+expect Mmu.init(big_rom(0x01)).read(0x4000) == 0x01
+expect Mmu.init(big_rom(0x01)).write(0x2000, 0x02).read(0x4000) == 0x02
+expect Mmu.init(big_rom(0x01)).write(0x2000, 0x00).read(0x4000) == 0x01
+expect Mmu.init(big_rom(0x01)).write(0x2000, 0x02).read(0x0000) == 0x00 # bank 0 fixed
+
+# MBC1: bank2 extends the window bank (0x21 = bank2 1, low 1)
+expect Mmu.init(big_rom(0x01)).write(0x2000, 0x01).write(0x4000, 0x01).read(0x4000) == 0x21
+# MBC1 mode 1: bank2 also maps the zero region
+expect Mmu.init(big_rom(0x01)).write(0x4000, 0x01).write(0x6000, 0x01).read(0x0000) == 0x20
+expect Mmu.init(big_rom(0x01)).write(0x4000, 0x01).read(0x0000) == 0x00 # mode 0: pinned
+
+# MBC3: 7-bit bank select, 0 maps to 1
+expect Mmu.init(big_rom(0x11)).write(0x2000, 0x05).read(0x4000) == 0x05
+expect Mmu.init(big_rom(0x11)).write(0x2000, 0x00).read(0x4000) == 0x01
+expect Mmu.init(big_rom(0x11)).write(0x2000, 0x3F).read(0x4000) == 0x3F
+
+# Cartridge RAM: gated by enable; disabled reads 0xFF and drops writes
+expect Mmu.init(big_rom(0x03)).write(0xA000, 0x55).read(0xA000) == 0xFF
+expect Mmu.init(big_rom(0x03)).write(0x0000, 0x0A).write(0xA000, 0x55).read(0xA000) == 0x55
+expect Mmu.init(big_rom(0x03)).write(0x0000, 0x0A).write(0xA000, 0x55).write(0x0000, 0x00).read(0xA000) == 0xFF
+
+# MBC3 RAM banking: each bank keeps its own contents
+expect {
+    m = Mmu.init(big_rom(0x13))
+        .write(0x0000, 0x0A)
+        .write(0x4000, 0x00)
+        .write(0xA000, 0x01)
+        .write(0x4000, 0x01)
+        .write(0xA000, 0x02)
+    m.write(0x4000, 0x00).read(0xA000) == 0x01 and m.write(0x4000, 0x01).read(0xA000) == 0x02
+}
+# MBC3 RTC select: reads 0xFF (no clock), writes dropped
+expect Mmu.init(big_rom(0x13)).write(0x0000, 0x0A).write(0x4000, 0x08).read(0xA000) == 0xFF
+
+# ROM-only: register writes are inert, RAM region is plain storage
+expect Mmu.init(test_rom).write(0x2000, 0x02).read(0x01FF) == 0x99
+expect Mmu.init(test_rom).write(0xA000, 0x77).read(0xA000) == 0x77
