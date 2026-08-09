@@ -14,40 +14,49 @@ Register := {
     e : U8,
     h : U8,
     l : U8,
-    interrupt_master_enable : Bool, # IME
-    halted : Bool,
-    interrupt_flag : U8,
-    interrupt_enable : U8,
 }.{
     Type8 := [Accumulator, Status, B, C, D, E, H, L]
     Type16 := [ProgramCounter, StackPointer, AccumulatorStatus, BC, DE, HL]
 
-    read16 : Type16 -> (Register -> U16)
-    read16 = |type| |reg|
+    # DMG post-boot values (no boot ROM)
+    init : {} -> Register
+    init = |_| {
+        program_counter: 0x0100,
+        stack_pointer: 0xFFFE,
+        accumulator: 0x01,
+        status: 0xB0,
+        b: 0x00,
+        c: 0x13,
+        d: 0x00,
+        e: 0xD8,
+        h: 0x01,
+        l: 0x4D,
+    }
+
+    read16 : Register, Type16 -> U16
+    read16 = |reg, type|
         match type {
             ProgramCounter => reg.program_counter
             StackPointer => reg.stack_pointer
             AccumulatorStatus => reg.accumulator.to_u16().shl_wrap(8).bitwise_or(reg.status.to_u16())
-            # I don't know if this is a good approach or I'm exaggerating
-            BC => read8(B)(reg).to_u16().shl_wrap(8).bitwise_or(read8(C)(reg).to_u16())
+            BC => reg.b.to_u16().shl_wrap(8).bitwise_or(reg.c.to_u16())
             DE => reg.d.to_u16().shl_wrap(8).bitwise_or(reg.e.to_u16())
             HL => reg.h.to_u16().shl_wrap(8).bitwise_or(reg.l.to_u16())
         }
 
-    write16 : Type16, U16 -> (Register -> Register)
-    write16 = |type, value| |reg|
+    write16 : Register, Type16, U16 -> Register
+    write16 = |reg, type, value|
         match type {
-            ProgramCounter => { ..reg, program_counter: value.bitwise_and(0xFFFF) }
-            StackPointer => { ..reg, stack_pointer: value.bitwise_and(0xFFFF) }
+            ProgramCounter => { ..reg, program_counter: value }
+            StackPointer => { ..reg, stack_pointer: value }
             AccumulatorStatus => { ..reg, accumulator: value.shr_zf_wrap(8).to_u8_wrap(), status: value.bitwise_and(0xF0).to_u8_wrap() } # Discard the lowest 4 bits as per spec
-            # Same here, I don't know if this is a good approach
-            BC => write8(C, value.bitwise_and(0xFF).to_u8_wrap())(write8(B, value.shr_zf_wrap(8).to_u8_wrap())(reg))
-            DE => { ..reg, d: value.shr_zf_wrap(8).to_u8_wrap(), e: value.bitwise_and(0xFF).to_u8_wrap() }
-            HL => { ..reg, h: value.shr_zf_wrap(8).to_u8_wrap(), l: value.bitwise_and(0xFF).to_u8_wrap() }
+            BC => { ..reg, b: value.shr_zf_wrap(8).to_u8_wrap(), c: value.to_u8_wrap() }
+            DE => { ..reg, d: value.shr_zf_wrap(8).to_u8_wrap(), e: value.to_u8_wrap() }
+            HL => { ..reg, h: value.shr_zf_wrap(8).to_u8_wrap(), l: value.to_u8_wrap() }
         }
 
-    read8 : Type8 -> (Register -> U8)
-    read8 = |type| |reg|
+    read8 : Register, Type8 -> U8
+    read8 = |reg, type|
         match type {
             Accumulator => reg.accumulator
             Status => reg.status
@@ -59,8 +68,8 @@ Register := {
             L => reg.l
         }
 
-    write8 : Type8, U8 -> (Register -> Register)
-    write8 = |type, value| |reg|
+    write8 : Register, Type8, U8 -> Register
+    write8 = |reg, type, value|
         match type {
             Accumulator => { ..reg, accumulator: value }
             Status => { ..reg, status: value.bitwise_and(0xF0) } # Discard the lowest 4 bits as per spec
@@ -72,3 +81,8 @@ Register := {
             L => { ..reg, l: value }
         }
 }
+
+expect Register.init({}).read16(AccumulatorStatus) == 0x01B0
+expect Register.init({}).write16(BC, 0x1234).read8(C) == 0x34
+expect Register.init({}).write16(AccumulatorStatus, 0xABCD).read16(AccumulatorStatus) == 0xABC0
+expect Register.init({}).write8(H, 0x12).write8(L, 0x34).read16(HL) == 0x1234
