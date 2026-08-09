@@ -15,8 +15,8 @@ nix run .#run-blargg          # or plain `run-blargg` inside `nix develop`
 Run a single test ROM or inspect a cartridge header:
 
 ```bash
-roc run examples/blargg.roc -- roms/cpu_instrs/06-ld\ r,r.gb
-roc run examples/cartridge.roc -- <rom-path>.gb
+roc run example/blargg.roc -- rom/cpu_instrs/06-ld\ r,r.gb
+roc run example/cartridge.roc -- <rom-path>.gb
 ```
 
 Develop:

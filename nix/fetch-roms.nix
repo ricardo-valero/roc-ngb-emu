@@ -1,4 +1,4 @@
-# Fetch Blargg's cpu_instrs individual test ROMs into ./roms (untracked).
+# Fetch Blargg's cpu_instrs individual test ROMs into ./rom (untracked).
 # Source: https://github.com/retrio/gb-test-roms
 {
   writeShellApplication,
@@ -8,7 +8,7 @@ writeShellApplication {
   name = "fetch-roms";
   runtimeInputs = [curl];
   text = ''
-    dir="$PWD/roms/cpu_instrs"
+    dir="$PWD/rom/cpu_instrs"
     base="https://github.com/retrio/gb-test-roms/raw/master/cpu_instrs/individual"
 
     roms=(

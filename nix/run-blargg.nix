@@ -1,5 +1,5 @@
 # Run all Blargg cpu_instrs individual ROMs through the headless runner.
-# Must be invoked from the repo root (it runs examples/blargg.roc).
+# Must be invoked from the repo root (it runs example/blargg.roc).
 {
   writeShellApplication,
   coreutils,
@@ -10,8 +10,8 @@ writeShellApplication {
   name = "run-blargg";
   runtimeInputs = [coreutils roc fetch-roms];
   text = ''
-    if [ ! -f examples/blargg.roc ]; then
-      echo "run-blargg: run from the repo root (examples/blargg.roc not found)" >&2
+    if [ ! -f example/blargg.roc ]; then
+      echo "run-blargg: run from the repo root (example/blargg.roc not found)" >&2
       exit 2
     fi
 
@@ -19,10 +19,10 @@ writeShellApplication {
 
     failures=0
     total=0
-    for rom in roms/cpu_instrs/*.gb; do
+    for rom in rom/cpu_instrs/*.gb; do
       total=$((total + 1))
       name="$(basename "$rom")"
-      if out="$(roc run examples/blargg.roc -- "$rom" 2>&1)"; then
+      if out="$(roc run example/blargg.roc -- "$rom" 2>&1)"; then
         echo "PASS  $name"
       else
         failures=$((failures + 1))
