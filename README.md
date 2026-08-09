@@ -6,7 +6,9 @@ A Game Boy (DMG) emulator written in [Roc](https://www.roc-lang.org). WIP!
 test ROMs, the PPU renders [dmg-acid2](https://github.com/mattcurrie/dmg-acid2)
 pixel-perfect against the reference image, and a
 [roc-ray](https://github.com/lukewilliamboswell/roc-ray) app plays ROMs in a
-window with keyboard input (no audio or MBC banking yet, so 32 KiB ROMs only).
+window with keyboard input. MBC1 and MBC3 cartridges work (banked ROM +
+cartridge RAM), so most of the DMG library runs — no audio or battery saves
+yet, and the combined Blargg `cpu_instrs.gb` is part of the 12-ROM suite.
 
 Play a ROM (the app embeds `rom/play.gb` at build time):
 

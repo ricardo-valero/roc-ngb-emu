@@ -12,6 +12,7 @@ writeShellApplication {
     base="https://github.com/retrio/gb-test-roms/raw/master/cpu_instrs/individual"
 
     roms=(
+      "cpu_instrs.gb"
       "01-special.gb"
       "02-interrupts.gb"
       "03-op sp,hl.gb"
@@ -29,7 +30,11 @@ writeShellApplication {
     for rom in "''${roms[@]}"; do
       if [ ! -f "$dir/$rom" ]; then
         echo "fetching $rom"
-        curl -fsSL "$base/''${rom// /%20}" -o "$dir/$rom"
+        if [ "$rom" = "cpu_instrs.gb" ]; then
+          curl -fsSL "https://github.com/retrio/gb-test-roms/raw/master/cpu_instrs/cpu_instrs.gb" -o "$dir/$rom"
+        else
+          curl -fsSL "$base/''${rom// /%20}" -o "$dir/$rom"
+        fi
       fi
     done
 
