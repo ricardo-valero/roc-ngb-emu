@@ -9,8 +9,7 @@ flags, interrupts, timer, serial). Next up: PPU.
 Run the Blargg verification suite (fetches the test ROMs on first run):
 
 ```bash
-nix develop                   # shell with roc nightly + nixd
-./scripts/run-blargg.sh
+nix run .#run-blargg          # or plain `run-blargg` inside `nix develop`
 ```
 
 Run a single test ROM or inspect a cartridge header:
