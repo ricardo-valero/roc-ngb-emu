@@ -19,7 +19,7 @@ main! = |args| {
     var gb = GameBoy.init(rom)
     var i = parsed.frames
     while i > 0 {
-        gb = gb.run_frame()
+        gb = gb.run_frame(GameBoy.no_buttons({}))
         i = i.minus(1)
     }
     parsed.out_path.write_bytes!(ppm(gb.framebuffer()))?
