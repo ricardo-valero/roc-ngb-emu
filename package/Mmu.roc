@@ -7,7 +7,20 @@ Mmu := {
     serial_out : List(U8),
     div_counter : U64,
     tima_counter : U64,
+    buttons : { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool },
 }.{
+    no_buttons : {} -> { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool }
+    no_buttons = |_| {
+        up: Bool.False,
+        down: Bool.False,
+        left: Bool.False,
+        right: Bool.False,
+        a: Bool.False,
+        b: Bool.False,
+        start: Bool.False,
+        select: Bool.False,
+    }
+
     # No MBC banking: individual Blargg cpu_instrs ROMs fit in 32 KiB
     init : List(U8) -> Mmu
     init = |rom| {
@@ -16,7 +29,7 @@ Mmu := {
             .sublist({ start: 0, len: rom_len })
             .concat(List.repeat(0, 0x10000 - rom_len))
         base : Mmu
-        base = { mem: mem, serial_out: [], div_counter: 0, tima_counter: 0 }
+        base = { mem: mem, serial_out: [], div_counter: 0, tima_counter: 0, buttons: no_buttons({}) }
         # DMG post-boot IO state. LY starts at 0; the PPU advances it for real.
         [
             (0xFF00, 0xCF), # P1/JOYP: no buttons pressed
@@ -32,7 +45,36 @@ Mmu := {
     }
 
     read : Mmu, U16 -> U8
-    read = |mmu, addr| mmu.mem.get(addr.to_u64()) ?? 0xFF
+    read = |mmu, addr|
+        if addr == 0xFF00 {
+            read_p1(mmu)
+        } else {
+            mmu.mem.get(addr.to_u64()) ?? 0xFF
+        }
+
+    set_buttons = |mmu, buttons| { ..mmu, buttons: buttons }
+
+    # P1/JOYP: stored select bits plus the selected group's buttons,
+    # active-low (0 = pressed). Both groups selected AND together.
+    read_p1 : Mmu -> U8
+    read_p1 = |mmu| {
+        sel = (mmu.mem.get(0xFF00) ?? 0xFF).bitwise_and(0x30)
+        b = mmu.buttons
+        dpad = if sel.bitwise_and(0x10) == 0x00 { button_nibble(b.right, b.left, b.up, b.down) } else { 0x0F }
+        actions = if sel.bitwise_and(0x20) == 0x00 { button_nibble(b.a, b.b, b.select, b.start) } else { 0x0F }
+        U8.bitwise_or(0xC0, sel).bitwise_or(dpad.bitwise_and(actions))
+    }
+
+    # bits 0-3, low when pressed
+    button_nibble : Bool, Bool, Bool, Bool -> U8
+    button_nibble = |b0, b1, b2, b3|
+        button_bit(b0, 0x01)
+            .bitwise_or(button_bit(b1, 0x02))
+            .bitwise_or(button_bit(b2, 0x04))
+            .bitwise_or(button_bit(b3, 0x08))
+
+    button_bit : Bool, U8 -> U8
+    button_bit = |pressed, mask| if pressed { 0x00 } else { mask }
 
     serial : Mmu -> List(U8)
     serial = |mmu| mmu.serial_out
@@ -57,6 +99,8 @@ Mmu := {
             }
         } else if addr == 0xFF04 {
             { ..mmu, div_counter: 0 }.poke(addr, 0x00) # DIV: any write resets
+        } else if addr == 0xFF00 {
+            mmu.poke(addr, value.bitwise_and(0x30).bitwise_or(0xC0)) # only the select bits stick
         } else if addr == 0xFF46 {
             # OAM DMA: instant 160-byte copy from value<<8 (games spin in HRAM
             # during the real transfer, so zero-time is invisible to them)
@@ -172,4 +216,23 @@ expect {
     }
     m = m.write(0xFF46, 0xC0)
     m.read(0xFE00) == 0x40 and m.read(0xFE9F) == 0xDF
+}
+
+# Joypad: select a group, read its buttons active-low
+expect {
+    m = Mmu.init(test_rom).set_buttons({ ..Mmu.no_buttons({}), a: Bool.True }).write(0xFF00, 0x10)
+    m.read(0xFF00).bitwise_and(0x0F) == 0x0E
+}
+expect {
+    m = Mmu.init(test_rom).set_buttons({ ..Mmu.no_buttons({}), down: Bool.True }).write(0xFF00, 0x20)
+    m.read(0xFF00).bitwise_and(0x0F) == 0x07
+}
+# Both groups selected AND together; none selected reads 0xF
+expect {
+    m = Mmu.init(test_rom).set_buttons({ ..Mmu.no_buttons({}), a: Bool.True, down: Bool.True }).write(0xFF00, 0x00)
+    m.read(0xFF00).bitwise_and(0x0F) == 0x06
+}
+expect {
+    m = Mmu.init(test_rom).set_buttons({ ..Mmu.no_buttons({}), a: Bool.True, down: Bool.True }).write(0xFF00, 0x30)
+    m.read(0xFF00).bitwise_and(0x0F) == 0x0F
 }

@@ -1,3 +1,5 @@
 rom/
 spike/rocray-hello/main
 .direnv/
+/play
+/main

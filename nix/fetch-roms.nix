@@ -39,6 +39,13 @@ writeShellApplication {
       echo "fetching dmg-acid2.gb"
       curl -fsSL "https://github.com/mattcurrie/dmg-acid2/releases/download/v1.0/dmg-acid2.gb" -o "$acid"
     fi
+
+    # rom/play.gb: the ROM the play app embeds at build time.
+    # Seeded from dmg-acid2; drop any game ROM here to play it instead.
+    if [ ! -f "$PWD/rom/play.gb" ]; then
+      cp "$acid" "$PWD/rom/play.gb"
+      echo "seeded rom/play.gb from dmg-acid2"
+    fi
     echo "ROMs ready in $PWD/rom"
   '';
 }

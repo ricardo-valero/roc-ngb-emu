@@ -2,11 +2,19 @@
 
 A Game Boy (DMG) emulator written in [Roc](https://www.roc-lang.org). WIP!
 
-**Status:** the SM83 CPU core passes all 11 of Blargg's `cpu_instrs` test
-ROMs, and the PPU renders [dmg-acid2](https://github.com/mattcurrie/dmg-acid2)
-pixel-perfect against the reference image (background, window, sprites,
-scanline timing, VBlank/STAT interrupts). Next up: roc-ray play app with
-joypad input.
+**Status:** playable! The SM83 CPU passes all 11 of Blargg's `cpu_instrs`
+test ROMs, the PPU renders [dmg-acid2](https://github.com/mattcurrie/dmg-acid2)
+pixel-perfect against the reference image, and a
+[roc-ray](https://github.com/lukewilliamboswell/roc-ray) app plays ROMs in a
+window with keyboard input (no audio or MBC banking yet, so 32 KiB ROMs only).
+
+Play a ROM (the app embeds `rom/play.gb` at build time):
+
+```bash
+nix run .#fetch-roms                        # seeds rom/play.gb with dmg-acid2
+cp your-game.gb rom/play.gb                 # optional: play your own ROM
+roc build example/play.roc && ./play        # arrows, X=A, Z=B, Enter=Start, Esc quits
+```
 
 Run the verification suites (test ROMs are fetched on first run):
 

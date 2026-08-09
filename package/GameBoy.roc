@@ -37,11 +37,13 @@ GameBoy := {
     framebuffer : GameBoy -> List(U8)
     framebuffer = |gb| gb.ppu.frame()
 
+    no_buttons = |_| Mmu.no_buttons({})
+
     # Run until the next VBlank entry (LY reaching 144), bounded so a wedged
     # ROM cannot hang the caller. A frame is ~17.6k steps even when halted.
-    run_frame : GameBoy -> GameBoy
-    run_frame = |gb0| {
-        var gb = gb0
+    run_frame : GameBoy, _ -> GameBoy
+    run_frame = |gb0, buttons| {
+        var gb = { ..gb0, mmu: gb0.mmu.set_buttons(buttons) }
         var budget = 40000.U64
         var vblank_seen = Bool.False
         while budget > 0 and vblank_seen == Bool.False {
@@ -515,7 +517,7 @@ expect {
 
 # Frame stepping: returns at VBlank entry with a full framebuffer of shades
 expect {
-    gb = GameBoy.init(rom_with([0x18, 0xFE])).run_frame() # JR -2: tight loop
+    gb = GameBoy.init(rom_with([0x18, 0xFE])).run_frame(GameBoy.no_buttons({})) # JR -2: tight loop
     fb = gb.framebuffer()
     gb.mmu.read(0xFF44) == 144
     and fb.len() == 23040
