@@ -25,3 +25,10 @@ All eleven Blargg `cpu_instrs` individual test ROMs SHALL pass through the headl
 - **WHEN** the suite script is executed with the toolchain devshell available
 - **THEN** each of the eleven ROMs is run and reported, and the script exits 0 only if all pass
 
+### Requirement: Combined Blargg ROM passes
+The combined `cpu_instrs.gb` (a 64 KiB MBC1 ROM that bank-switches between subtests) SHALL pass through the headless runner, and the suite script SHALL include it alongside the 11 individual ROMs.
+
+#### Scenario: Combined ROM in the suite
+- **WHEN** the Blargg suite runs
+- **THEN** twelve results are reported and the combined ROM's serial output contains `Passed`
+
