@@ -1,19 +1,6 @@
-# roc-package Specification
+# roc-package Delta Specification
 
-## Purpose
-
-The emulator package and examples compile (`roc check`) and pass their inline tests (`roc test`) under the pinned new-compiler toolchain.
-## Requirements
-### Requirement: Sources compile under the new compiler
-All Roc source files (`package/**/*.roc` and `examples/*.roc`) SHALL use the new-compiler syntax and pass `roc check` under the pinned toolchain from the devshell.
-
-#### Scenario: Checking the package
-- **WHEN** `roc check` is run against the package entry point and each module
-- **THEN** it completes with no errors
-
-#### Scenario: Checking the example
-- **WHEN** `roc check examples/cartridge.roc` is run
-- **THEN** it completes with no errors
+## MODIFIED Requirements
 
 ### Requirement: Inline tests pass with unchanged behavior
 All inline `expect` tests SHALL pass under the pinned toolchain, and their assertions SHALL encode hardware-correct SM83 behavior. Legacy-branch behavior preservation no longer constrains test values: where pre-migration assertions conflict with documented hardware semantics (e.g. list-fold ALU flag results), the assertions SHALL be replaced with hardware-correct ones.
@@ -25,4 +12,3 @@ All inline `expect` tests SHALL pass under the pinned toolchain, and their asser
 #### Scenario: Hardware correctness supersedes legacy parity
 - **WHEN** a legacy assertion disagrees with documented SM83 flag behavior
 - **THEN** the test asserts the documented hardware behavior, not the legacy value
-
