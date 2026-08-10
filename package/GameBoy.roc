@@ -93,23 +93,9 @@ GameBoy := {
     # Every path leaves through here so the timer, PPU, and APU see all cycles
     finish : GameBoy, U64 -> (GameBoy, U64)
     finish = |gb, cycles| {
-        # Deconstruct completely so no field is co-owned by a live `gb` while
-        # the components mutate their state — a shared bus or sample buffer
-        # degrades every write into a full clone.
-        reg = gb.reg
-        ime = gb.ime
-        halted = gb.halted
-        ei_pending = gb.ei_pending
-        ppu0 = gb.ppu
-        apu0 = gb.apu
-        mmu0 = gb.mmu
-        r = ppu0.tick(mmu0.tick(cycles), cycles)
-        ppu2 = r.ppu
-        a = apu0.tick(r.mmu, cycles)
-        apu2 = a.apu
-        gb2 : GameBoy
-        gb2 = { reg: reg, mmu: a.mmu, ppu: ppu2, apu: apu2, ime: ime, halted: halted, ei_pending: ei_pending }
-        (gb2, cycles)
+        r = gb.ppu.tick(gb.mmu.tick(cycles), cycles)
+        a = gb.apu.tick(r.mmu, cycles)
+        ({ ..gb, mmu: a.mmu, ppu: r.ppu, apu: a.apu }, cycles)
     }
 
     dispatch : GameBoy, U8 -> (GameBoy, U64)
@@ -138,9 +124,7 @@ GameBoy := {
         pc = gb0.reg.read16(ProgramCounter)
         opcode = gb0.mmu.read(pc)
         r = execute(gb0, pc.plus_wrap(1), Instruction.lookup(opcode))
-        spent = r.cycles
-        next_pc = r.pc
-        gb1 = { ..r.gb, reg: r.gb.reg.write16(ProgramCounter, next_pc) }
+        gb1 = { ..r.gb, reg: r.gb.reg.write16(ProgramCounter, r.pc) }
         # EI takes effect after the instruction that follows it (DI cancels)
         gb2 =
             if was_ei_pending and gb1.ei_pending {
@@ -148,7 +132,7 @@ GameBoy := {
             } else {
                 gb1
             }
-        finish(gb2, spent)
+        finish(gb2, r.cycles)
     }
 
     imm16 : GameBoy, U16 -> U16

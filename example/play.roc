@@ -17,8 +17,11 @@ import rr.Host
 import ngb.GameBoy
 import "../rom/play.gb" as rom : List(U8)
 
+# GameBoy is boxed: passing the large nested record itself through the
+# host's model round-trip crashes in the platform's refcount walk
+# (roc_llvm_rc_incref reading past an allocation).
 Model : {
-    gb : GameBoy,
+    gb : Box(GameBoy),
     screen : Assets.Texture,
 }
 
@@ -37,7 +40,7 @@ init! = App.init(
         screen = Assets.Texture.generate_color!({ width: 160, height: 144, color: Color.black })?
         screen.set_filter!(Point)
         screen.set_wrap!(Clamp)
-        Ok({ gb: GameBoy.init(rom), screen })
+        Ok({ gb: Box.box(GameBoy.init(rom)), screen })
     },
 )
 
@@ -58,9 +61,9 @@ render! = |model, host, frame| {
         select: host.key_down(KeyBackspace),
     }
 
-    ran = model.gb.run_frame(buttons)
+    ran = Box.unbox(model.gb).run_frame(buttons)
     # No speaker path yet (roc-ray has no PCM streaming): drop the APU
-    # samples each frame so the buffer never grows
+    # samples each frame so the ring stays parked
     drained = ran.take_samples()
     gb = drained.gb
 
@@ -76,7 +79,7 @@ render! = |model, host, frame| {
         tint: Color.white,
     })
 
-    Ok({ ..model, gb })
+    Ok({ ..model, gb: Box.box(gb) })
 }
 
 # The classic DMG green LCD, light to dark
