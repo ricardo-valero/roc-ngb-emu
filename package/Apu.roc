@@ -1,0 +1,593 @@
+# DMG audio processing unit: four channels driven by a 512 Hz frame
+# sequencer, ticked from CPU-step cycles like the timer and PPU. Registers
+# live in the bus (with read-back masks applied there); this record holds the
+# hidden state: timers, counters, LFSR, and the generated sample buffer.
+# https://gbdev.io/pandocs/Audio_details.html
+
+import /Mmu
+
+# One record shape serves all four channels; unused fields stay idle
+Channel : {
+    enabled : Bool,
+    length : U16,
+    timer : U64, # cycles until the next waveform step
+    duty_pos : U8,
+    volume : U8,
+    env_timer : U8,
+    sweep_timer : U8,
+    sweep_shadow : U16,
+    sweep_enabled : Bool,
+    wave_pos : U8,
+    lfsr : U16,
+}
+
+Apu := {
+    ch1 : Channel,
+    ch2 : Channel,
+    ch3 : Channel,
+    ch4 : Channel,
+    pending : U64, # cycles accumulated since the last real advance (batching)
+    fs_timer : U64, # counts to 8192 cycles = one 512 Hz frame-sequencer step
+    fs_step : U8,
+    sample_acc : U64, # fractional accumulator: emit when >= 4194304
+}.{
+    blank : {} -> Channel
+    blank = |_| {
+        enabled: Bool.False,
+        length: 0,
+        timer: 8192,
+        duty_pos: 0,
+        volume: 0,
+        env_timer: 0,
+        sweep_timer: 0,
+        sweep_shadow: 0,
+        sweep_enabled: Bool.False,
+        wave_pos: 0,
+        lfsr: 0x7FFF,
+    }
+
+    init : {} -> Apu
+    init = |_| {
+        apu : Apu
+        apu = {
+            ch1: blank({}),
+            ch2: blank({}),
+            ch3: blank({}),
+            ch4: blank({}),
+            pending: 0,
+            fs_timer: 0,
+            fs_step: 0,
+            sample_acc: 0,
+        }
+        apu
+    }
+
+    # Called every CPU step. Real work happens only when a register event
+    # arrived or enough cycles accumulated to matter (the next 48 kHz sample
+    # is ~87 cycles away) — per-instruction the cost is one compare.
+    tick : Apu, Mmu, U64 -> { apu : Apu, mmu : Mmu }
+    tick = |apu, mmu, cycles| {
+        total = apu.pending.plus(cycles)
+        if mmu.apu_events.len() > 0 or total >= 128 {
+            advance({ ..apu, pending: 0 }, mmu, total)
+        } else {
+            { apu: { ..apu, pending: total }, mmu: mmu }
+        }
+    }
+
+    advance : Apu, Mmu, U64 -> { apu : Apu, mmu : Mmu }
+    advance = |apu0, mmu0, cycles| {
+        drained = mmu0.take_apu_events()
+        events = drained.events
+        var mmu = drained.mmu # last use of `drained`: the bus stays uniquely owned
+        var apu = apu0
+
+        var i = 0
+        while i < events.len() {
+            apu = handle_event(apu, mmu, events.get(i) ?? 0xFF)
+            i = i.plus(1)
+        }
+
+        # waveform timers
+        apu = { ..apu,
+            ch1: advance_pulse(apu.ch1, pulse_period(mmu, 0xFF13, 0xFF14), cycles),
+            ch2: advance_pulse(apu.ch2, pulse_period(mmu, 0xFF18, 0xFF19), cycles),
+            ch3: advance_wave(apu.ch3, wave_period(mmu), cycles),
+            ch4: advance_noise(apu.ch4, noise_period(mmu), noise_width7(mmu), cycles),
+        }
+
+        # frame sequencer
+        var fs = apu.fs_timer.plus(cycles)
+        while fs >= 8192 {
+            fs = fs.minus(8192)
+            step = apu.fs_step.plus(1).bitwise_and(0x07)
+            apu = { ..apu, fs_step: step }
+            if step.bitwise_and(0x01) == 0x00 {
+                apu = clock_lengths(apu, mmu)
+            } else {
+                {}
+            }
+            if step == 2 or step == 6 {
+                s = clock_sweep(apu, mmu)
+                apu = s.apu
+                mmu = s.mmu
+            } else {
+                {}
+            }
+            if step == 7 {
+                apu = clock_envelopes(apu, mmu)
+            } else {
+                {}
+            }
+        }
+        apu = { ..apu, fs_timer: fs }
+
+        # NR52 status bits (before the sample block: it consumes `apu`)
+        mmu2 =
+            if mmu.apu_powered() {
+                mmu.poke(0xFF26, status_byte(apu, mmu))
+            } else {
+                mmu
+            }
+
+        # sample emission: all samples within one advance share the end-of-tick
+        # state, so mix once and push into the bus-side buffer (the bus stays
+        # uniquely owned through the step pipeline, so appends are in-place)
+        pair = mix(apu, mmu2)
+        var acc = apu.sample_acc.plus(cycles * 48000)
+        var mmu3 = mmu2
+        while acc >= 4194304 {
+            acc = acc.minus(4194304)
+            mmu3 = mmu3.push_sample_pair(pair.left, pair.right)
+        }
+        { apu: { ..apu, sample_acc: acc }, mmu: mmu3 }
+    }
+
+    status_byte : Apu, Mmu -> U8
+    status_byte = |apu, mmu| {
+        power = (mmu.read_raw(0xFF26)).bitwise_and(0x80)
+        power
+            .bitwise_or(if apu.ch1.enabled { 0x01 } else { 0x00 })
+            .bitwise_or(if apu.ch2.enabled { 0x02 } else { 0x00 })
+            .bitwise_or(if apu.ch3.enabled { 0x04 } else { 0x00 })
+            .bitwise_or(if apu.ch4.enabled { 0x08 } else { 0x00 })
+    }
+
+    # --- events ---
+
+    handle_event : Apu, Mmu, U8 -> Apu
+    handle_event = |apu, mmu, event|
+        match event {
+            0 => { ..apu, ch1: trigger_ch1(apu.ch1, mmu) }
+            1 => { ..apu, ch2: trigger_pulse(apu.ch2, mmu, 0xFF16, 0xFF17, pulse_period(mmu, 0xFF18, 0xFF19)) }
+            2 => { ..apu, ch3: trigger_wave(apu.ch3, mmu) }
+            3 => { ..apu, ch4: trigger_noise(apu.ch4, mmu) }
+            _ => { ..apu, ch1: blank({}), ch2: blank({}), ch3: blank({}), ch4: blank({}) } # power off
+        }
+
+    dac_on : Mmu, U16 -> Bool
+    dac_on = |mmu, nrx2| mmu.read_raw(nrx2).bitwise_and(0xF8) != 0x00
+
+    trigger_pulse : Channel, Mmu, U16, U16, U64 -> Channel
+    trigger_pulse = |ch, mmu, nrx1, nrx2, period| {
+        env = mmu.read_raw(nrx2)
+        len = U16.minus(64, mmu.read_raw(nrx1).bitwise_and(0x3F).to_u16())
+        { ..ch,
+            enabled: dac_on(mmu, nrx2),
+            length: if len == 0 { 64 } else { len },
+            timer: period,
+            volume: env.shr_zf_wrap(4),
+            env_timer: env.bitwise_and(0x07),
+        }
+    }
+
+    trigger_ch1 : Channel, Mmu -> Channel
+    trigger_ch1 = |ch0, mmu| {
+        ch = trigger_pulse(ch0, mmu, 0xFF11, 0xFF12, pulse_period(mmu, 0xFF13, 0xFF14))
+        nr10 = mmu.read_raw(0xFF10)
+        period = nr10.shr_zf_wrap(4).bitwise_and(0x07)
+        shift = nr10.bitwise_and(0x07)
+        shadow = raw_frequency(mmu, 0xFF13, 0xFF14)
+        armed = { ..ch,
+            sweep_shadow: shadow,
+            sweep_timer: if period == 0 { 8 } else { period },
+            sweep_enabled: period != 0 or shift != 0,
+        }
+        # immediate overflow check when a shift is set
+        if shift != 0 and sweep_next(armed.sweep_shadow, nr10) > 2047 {
+            { ..armed, enabled: Bool.False }
+        } else {
+            armed
+        }
+    }
+
+    trigger_wave : Channel, Mmu -> Channel
+    trigger_wave = |ch, mmu| {
+        len = U16.minus(256, mmu.read_raw(0xFF1B).to_u16())
+        { ..ch,
+            enabled: mmu.read_raw(0xFF1A).bitwise_and(0x80) != 0x00,
+            length: if len == 0 { 256 } else { len },
+            timer: wave_period(mmu),
+            wave_pos: 0,
+        }
+    }
+
+    trigger_noise : Channel, Mmu -> Channel
+    trigger_noise = |ch, mmu| {
+        env = mmu.read_raw(0xFF21)
+        len = U16.minus(64, mmu.read_raw(0xFF20).bitwise_and(0x3F).to_u16())
+        { ..ch,
+            enabled: dac_on(mmu, 0xFF21),
+            length: if len == 0 { 64 } else { len },
+            timer: noise_period(mmu),
+            volume: env.shr_zf_wrap(4),
+            env_timer: env.bitwise_and(0x07),
+            lfsr: 0x7FFF,
+        }
+    }
+
+    # --- waveform timing ---
+
+    raw_frequency : Mmu, U16, U16 -> U16
+    raw_frequency = |mmu, lo, hi|
+        mmu.read_raw(hi).bitwise_and(0x07).to_u16().shl_wrap(8).bitwise_or(mmu.read_raw(lo).to_u16())
+
+    pulse_period : Mmu, U16, U16 -> U64
+    pulse_period = |mmu, lo, hi|
+        U16.minus(2048, raw_frequency(mmu, lo, hi)).to_u64().shl_wrap(2)
+
+    wave_period : Mmu -> U64
+    wave_period = |mmu|
+        U16.minus(2048, raw_frequency(mmu, 0xFF1D, 0xFF1E)).to_u64().shl_wrap(1)
+
+    noise_period : Mmu -> U64
+    noise_period = |mmu| {
+        nr43 = mmu.read_raw(0xFF22)
+        divisor =
+            match nr43.bitwise_and(0x07) {
+                0 => 8
+                d => d.to_u64().shl_wrap(4)
+            }
+        divisor.shl_wrap(nr43.shr_zf_wrap(4))
+    }
+
+    noise_width7 : Mmu -> Bool
+    noise_width7 = |mmu| mmu.read_raw(0xFF22).bitwise_and(0x08) != 0x00
+
+    advance_pulse : Channel, U64, U64 -> Channel
+    advance_pulse = |ch0, period, cycles| {
+        var ch = ch0
+        var rem = cycles
+        while rem >= ch.timer {
+            rem = rem.minus(ch.timer)
+            ch = { ..ch, timer: period, duty_pos: ch.duty_pos.plus(1).bitwise_and(0x07) }
+        }
+        { ..ch, timer: ch.timer.minus(rem) }
+    }
+
+    advance_wave : Channel, U64, U64 -> Channel
+    advance_wave = |ch0, period, cycles| {
+        var ch = ch0
+        var rem = cycles
+        while rem >= ch.timer {
+            rem = rem.minus(ch.timer)
+            ch = { ..ch, timer: period, wave_pos: ch.wave_pos.plus(1).bitwise_and(0x1F) }
+        }
+        { ..ch, timer: ch.timer.minus(rem) }
+    }
+
+    advance_noise : Channel, U64, Bool, U64 -> Channel
+    advance_noise = |ch0, period, width7, cycles| {
+        var ch = ch0
+        var rem = cycles
+        while rem >= ch.timer {
+            rem = rem.minus(ch.timer)
+            ch = { ..ch, timer: period, lfsr: clock_lfsr(ch.lfsr, width7) }
+        }
+        { ..ch, timer: ch.timer.minus(rem) }
+    }
+
+    clock_lfsr : U16, Bool -> U16
+    clock_lfsr = |lfsr, width7| {
+        bit = lfsr.bitwise_xor(lfsr.shr_zf_wrap(1)).bitwise_and(0x0001)
+        next = lfsr.shr_zf_wrap(1).bitwise_or(bit.shl_wrap(14))
+        if width7 {
+            next.bitwise_and(0xFFBF).bitwise_or(bit.shl_wrap(6))
+        } else {
+            next
+        }
+    }
+
+    # --- frame sequencer clocks ---
+
+    length_enabled : Mmu, U16 -> Bool
+    length_enabled = |mmu, nrx4| mmu.read_raw(nrx4).bitwise_and(0x40) != 0x00
+
+    clock_length : Channel, Bool -> Channel
+    clock_length = |ch, enable|
+        if enable and ch.length > 0 {
+            remaining = ch.length.minus(1)
+            if remaining == 0 {
+                { ..ch, length: 0, enabled: Bool.False }
+            } else {
+                { ..ch, length: remaining }
+            }
+        } else {
+            ch
+        }
+
+    clock_lengths : Apu, Mmu -> Apu
+    clock_lengths = |apu, mmu| { ..apu,
+        ch1: clock_length(apu.ch1, length_enabled(mmu, 0xFF14)),
+        ch2: clock_length(apu.ch2, length_enabled(mmu, 0xFF19)),
+        ch3: clock_length(apu.ch3, length_enabled(mmu, 0xFF1E)),
+        ch4: clock_length(apu.ch4, length_enabled(mmu, 0xFF23)),
+    }
+
+    clock_envelope : Channel, U8 -> Channel
+    clock_envelope = |ch, nrx2| {
+        period = nrx2.bitwise_and(0x07)
+        if period == 0 or ch.enabled == Bool.False {
+            ch
+        } else if ch.env_timer <= 1 {
+            increase = nrx2.bitwise_and(0x08) != 0x00
+            volume =
+                if increase {
+                    if ch.volume < 15 { ch.volume.plus(1) } else { ch.volume }
+                } else {
+                    if ch.volume > 0 { ch.volume.minus(1) } else { ch.volume }
+                }
+            { ..ch, env_timer: period, volume: volume }
+        } else {
+            { ..ch, env_timer: ch.env_timer.minus(1) }
+        }
+    }
+
+    clock_envelopes : Apu, Mmu -> Apu
+    clock_envelopes = |apu, mmu| { ..apu,
+        ch1: clock_envelope(apu.ch1, mmu.read_raw(0xFF12)),
+        ch2: clock_envelope(apu.ch2, mmu.read_raw(0xFF17)),
+        ch4: clock_envelope(apu.ch4, mmu.read_raw(0xFF21)),
+    }
+
+    sweep_next : U16, U8 -> U16
+    sweep_next = |shadow, nr10| {
+        delta = shadow.shr_zf_wrap(nr10.bitwise_and(0x07))
+        if nr10.bitwise_and(0x08) != 0x00 {
+            shadow.minus_wrap(delta)
+        } else {
+            shadow.plus_wrap(delta)
+        }
+    }
+
+    clock_sweep : Apu, Mmu -> { apu : Apu, mmu : Mmu }
+    clock_sweep = |apu, mmu| {
+        ch = apu.ch1
+        nr10 = mmu.read_raw(0xFF10)
+        period = nr10.shr_zf_wrap(4).bitwise_and(0x07)
+        shift = nr10.bitwise_and(0x07)
+        if ch.sweep_timer > 1 {
+            { apu: { ..apu, ch1: { ..ch, sweep_timer: ch.sweep_timer.minus(1) } }, mmu: mmu }
+        } else {
+            reloaded = { ..ch, sweep_timer: if period == 0 { 8 } else { period } }
+            if reloaded.sweep_enabled and period != 0 {
+                next = sweep_next(reloaded.sweep_shadow, nr10)
+                if next > 2047 {
+                    { apu: { ..apu, ch1: { ..reloaded, enabled: Bool.False } }, mmu: mmu }
+                } else if shift != 0 {
+                    mmu2 = mmu
+                        .poke(0xFF13, next.to_u8_wrap())
+                        .poke(0xFF14, mmu.read_raw(0xFF14).bitwise_and(0xF8).bitwise_or(next.shr_zf_wrap(8).to_u8_wrap()))
+                    updated = { ..reloaded, sweep_shadow: next }
+                    if sweep_next(next, nr10) > 2047 {
+                        { apu: { ..apu, ch1: { ..updated, enabled: Bool.False } }, mmu: mmu2 }
+                    } else {
+                        { apu: { ..apu, ch1: updated }, mmu: mmu2 }
+                    }
+                } else {
+                    { apu: { ..apu, ch1: reloaded }, mmu: mmu }
+                }
+            } else {
+                { apu: { ..apu, ch1: reloaded }, mmu: mmu }
+            }
+        }
+    }
+
+    # --- output ---
+
+    # Duty patterns as bit masks read at duty_pos (LSB first):
+    # 12.5%, 25%, 50%, 75%
+    pulse_wave : U8, U8 -> Bool
+    pulse_wave = |duty, pos| {
+        pattern : U8
+        pattern =
+            match duty {
+                0 => 0x01
+                1 => 0x03
+                2 => 0x0F
+                _ => 0xFC
+            }
+        pattern.bitwise_and(U8.shl_wrap(1, pos)) != 0x00
+    }
+
+    pulse_out : Channel, U8 -> U8
+    pulse_out = |ch, nrx1|
+        if ch.enabled and pulse_wave(nrx1.shr_zf_wrap(6), ch.duty_pos) {
+            ch.volume
+        } else {
+            0
+        }
+
+    wave_out : Channel, Mmu -> U8
+    wave_out = |ch, mmu|
+        if ch.enabled {
+            byte = mmu.read_raw(U16.plus(0xFF30, ch.wave_pos.shr_zf_wrap(1).to_u16()))
+            nibble =
+                if ch.wave_pos.bitwise_and(0x01) == 0x00 {
+                    byte.shr_zf_wrap(4)
+                } else {
+                    byte.bitwise_and(0x0F)
+                }
+            match mmu.read_raw(0xFF1C).shr_zf_wrap(5).bitwise_and(0x03) {
+                0 => 0
+                1 => nibble
+                2 => nibble.shr_zf_wrap(1)
+                _ => nibble.shr_zf_wrap(2)
+            }
+        } else {
+            0
+        }
+
+    noise_out : Channel -> U8
+    noise_out = |ch|
+        if ch.enabled and ch.lfsr.bitwise_and(0x0001) == 0x0000 {
+            ch.volume
+        } else {
+            0
+        }
+
+    # DAC: 0-15 maps to [-1, 1]; each channel contributes a quarter
+    dac : U8, Bool -> F32
+    dac = |out, on|
+        if on {
+            (out.to_f32() - 7.5) / 7.5 * 0.25
+        } else {
+            0.0
+        }
+
+    mix : Apu, Mmu -> { left : F32, right : F32 }
+    mix = |apu, mmu| {
+        o1 = dac(pulse_out(apu.ch1, mmu.read_raw(0xFF11)), apu.ch1.enabled)
+        o2 = dac(pulse_out(apu.ch2, mmu.read_raw(0xFF16)), apu.ch2.enabled)
+        o3 = dac(wave_out(apu.ch3, mmu), apu.ch3.enabled)
+        o4 = dac(noise_out(apu.ch4), apu.ch4.enabled)
+        nr51 = mmu.read_raw(0xFF25)
+        nr50 = mmu.read_raw(0xFF24)
+        left_vol = (nr50.shr_zf_wrap(4).bitwise_and(0x07).to_f32() + 1.0) / 8.0
+        right_vol = (nr50.bitwise_and(0x07).to_f32() + 1.0) / 8.0
+        {
+            left: (route(o1, nr51, 4) + route(o2, nr51, 5) + route(o3, nr51, 6) + route(o4, nr51, 7)) * left_vol,
+            right: (route(o1, nr51, 0) + route(o2, nr51, 1) + route(o3, nr51, 2) + route(o4, nr51, 3)) * right_vol,
+        }
+    }
+
+    route : F32, U8, U8 -> F32
+    route = |sample, nr51, bit|
+        if nr51.bitwise_and(U8.shl_wrap(1, bit)) != 0x00 {
+            sample
+        } else {
+            0.0
+        }
+}
+
+# --- expects ---
+
+test_rom : List(U8)
+test_rom = List.repeat(0x00, 0x8000)
+
+fresh : {} -> { apu : Apu, mmu : Mmu }
+fresh = |_| { apu: Apu.init({}), mmu: Mmu.init(test_rom) }
+
+# Length expiry silences a channel and clears its NR52 bit
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF16, 0x3F).write(0xFF17, 0xF0).write(0xFF19, 0xC0) # len 1, vol 15, trigger+len-enable
+    r = f.apu.tick(m, 4)
+    after = r.apu.tick(r.mmu, 16384) # at least one 256 Hz length clock
+    r.mmu.read_raw(0xFF26).bitwise_and(0x02) == 0x02
+    and after.mmu.read_raw(0xFF26).bitwise_and(0x02) == 0x00
+}
+
+# Envelope steps down at 64 Hz
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF17, 0xF1).write(0xFF19, 0x80) # vol 15, decrease, period 1
+    r = f.apu.tick(m, 4)
+    after = r.apu.tick(r.mmu, 8192 * 8) # one full sequencer round: one envelope clock
+    r.apu.ch2.volume == 15 and after.apu.ch2.volume == 14
+}
+
+# Duty walker advances with the frequency timer (freq 0x7FF: period 4)
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF18, 0xFF).write(0xFF17, 0xF0).write(0xFF19, 0x87)
+    r = f.apu.tick(m, 0) # drain the trigger only; timer loaded, no steps yet
+    after = r.apu.tick(r.mmu, 144) # 36 steps of period 4: duty_pos 36 % 8 = 4
+    after.apu.ch2.duty_pos == 4
+}
+
+# Duty ratios: 50% pattern is high for 4 of 8 steps; 12.5% for 1
+expect {
+    highs = |duty| [0, 1, 2, 3, 4, 5, 6, 7].fold(0, |n, pos| if Apu.pulse_wave(duty, pos) { n.plus(1) } else { n })
+    highs(0) == 1 and highs(1) == 2 and highs(2) == 4 and highs(3) == 6
+}
+
+# Sweep overflow disables CH1 at trigger
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF10, 0x01).write(0xFF12, 0xF0).write(0xFF13, 0xFF).write(0xFF14, 0x87)
+    r = f.apu.tick(m, 4)
+    r.apu.ch1.enabled == Bool.False and r.mmu.read_raw(0xFF26).bitwise_and(0x01) == 0x00
+}
+
+# Sweep with room keeps the channel alive
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF10, 0x11).write(0xFF12, 0xF0).write(0xFF13, 0x00).write(0xFF14, 0x84)
+    r = f.apu.tick(m, 4)
+    r.apu.ch1.enabled == Bool.True
+}
+
+# LFSR: documented first steps from all-ones, and 7-bit mode feedback
+expect Apu.clock_lfsr(0x7FFF, Bool.False) == 0x3FFF
+expect Apu.clock_lfsr(0x3FFF, Bool.False) == 0x1FFF
+expect Apu.clock_lfsr(0x0001, Bool.False) == 0x4000
+expect Apu.clock_lfsr(0x7FFF, Bool.True) == 0x3FBF
+
+# Wave channel follows wave RAM nibbles
+expect {
+    f = fresh({})
+    m = f.mmu
+        .write(0xFF30, 0xF0) # nibble 0 = 15, nibble 1 = 0
+        .write(0xFF1A, 0x80) # DAC on
+        .write(0xFF1C, 0x20) # volume 100%
+        .write(0xFF1D, 0x00)
+        .write(0xFF1E, 0x87) # trigger, freq 0x700: period (2048-1792)*2 = 512
+    r = f.apu.tick(m, 4)
+    w0 = Apu.wave_out(r.apu.ch3, r.mmu)
+    stepped = r.apu.tick(r.mmu, 512)
+    w1 = Apu.wave_out(stepped.apu.ch3, stepped.mmu)
+    w0 == 15 and w1 == 0
+}
+
+# Panning: CH2 routed left only produces silent right samples
+expect {
+    f = fresh({})
+    m = f.mmu
+        .write(0xFF25, 0x20) # CH2 left only
+        .write(0xFF16, 0x00) # duty 0: high at pos 0 right after trigger
+        .write(0xFF17, 0xF0)
+        .write(0xFF18, 0x00)
+        .write(0xFF19, 0x80) # trigger, freq 0: period 8192
+    r = f.apu.tick(m, 4)
+    out = r.apu.tick(r.mmu, 128) # one batched advance: exactly one stereo pair
+    samples = out.mmu.take_samples().samples
+    samples.len() == 2 and (samples.get(0) ?? 0.0) > 0.0 and (samples.get(1) ?? 0.0) == 0.0
+}
+
+# One video frame yields ~800 stereo pairs at 48 kHz
+expect {
+    f = fresh({})
+    r = f.apu.tick(f.mmu, 70224)
+    n = r.mmu.take_samples().samples.len()
+    n >= 1600 and n <= 1610
+}
+
+# Power off blanks every channel
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF17, 0xF0).write(0xFF19, 0x80)
+    r = f.apu.tick(m, 4)
+    off = r.apu.tick(r.mmu.write(0xFF26, 0x00), 4)
+    r.apu.ch2.enabled == Bool.True and off.apu.ch2.enabled == Bool.False
+}

@@ -10,6 +10,9 @@ Mmu := {
     div_counter : U64,
     tima_counter : U64,
     buttons : { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool },
+    apu_events : List(U8), # channel triggers (0-3) and power-off (0xF0), drained by the APU
+    samples : List(F32), # APU output ring (preallocated: append-in-spread clones, set does not)
+    sample_count : U64, # write index into the ring
     mbc : [None, Mbc1, Mbc3],
     rom_bank : U8, # raw register value; 0->1 translation happens at read
     bank2 : U8, # MBC1 secondary register / MBC3 RAM bank (or RTC select)
@@ -48,6 +51,9 @@ Mmu := {
             div_counter: 0,
             tima_counter: 0,
             buttons: no_buttons({}),
+            apu_events: [],
+            samples: List.repeat(0.0, 16384), # ~5 frames of stereo headroom
+            sample_count: 0,
             mbc: mbc,
             rom_bank: 1,
             bank2: 0,
@@ -61,6 +67,21 @@ Mmu := {
             (0xFF04, 0xAB), # DIV
             (0xFF07, 0xF8), # TAC
             (0xFF0F, 0xE1), # IF
+            (0xFF10, 0x80), # NR10
+            (0xFF11, 0xBF), # NR11
+            (0xFF12, 0xF3), # NR12
+            (0xFF14, 0xBF), # NR14
+            (0xFF16, 0x3F), # NR21
+            (0xFF19, 0xBF), # NR24
+            (0xFF1A, 0x7F), # NR30
+            (0xFF1B, 0xFF), # NR31
+            (0xFF1C, 0x9F), # NR32
+            (0xFF1E, 0xBF), # NR34
+            (0xFF20, 0xFF), # NR41
+            (0xFF23, 0xBF), # NR44
+            (0xFF24, 0x77), # NR50
+            (0xFF25, 0xF3), # NR51
+            (0xFF26, 0x80), # NR52: power on, no channels active yet
             (0xFF40, 0x91), # LCDC
             (0xFF41, 0x86), # STAT: line 0, mode 2, LY=LYC
             (0xFF47, 0xFC), # BGP
@@ -76,6 +97,13 @@ Mmu := {
             mmu.rom.get(switch_region_bank(mmu).shl_wrap(14).plus(addr.to_u64().minus(0x4000))) ?? 0xFF
         } else if addr >= 0xA000 and addr < 0xC000 {
             read_cart_ram(mmu, addr)
+        } else if addr >= 0xFF10 and addr <= 0xFF2F {
+            if addr == 0xFF26 {
+                # 0x70 | power bit | live channel-status bits (poked by the APU)
+                U8.bitwise_or(0x70, (mmu.mem.get(0xFF26) ?? 0x00).bitwise_and(0x8F))
+            } else {
+                (mmu.mem.get(addr.to_u64()) ?? 0x00).bitwise_or(apu_read_mask(addr))
+            }
         } else if addr == 0xFF00 {
             read_p1(mmu)
         } else {
@@ -173,6 +201,11 @@ Mmu := {
     button_bit : Bool, U8 -> U8
     button_bit = |pressed, mask| if pressed { 0x00 } else { mask }
 
+    # Unmasked register byte for internal components (the APU must see the
+    # real written values, not the CPU-facing read-back masks)
+    read_raw : Mmu, U16 -> U8
+    read_raw = |mmu, addr| mmu.mem.get(addr.to_u64()) ?? 0xFF
+
     serial : Mmu -> List(U8)
     serial = |mmu| mmu.serial_out
 
@@ -180,6 +213,64 @@ Mmu := {
     poke : Mmu, U16, U8 -> Mmu
     poke = |mmu, addr, value|
         { ..mmu, mem: mmu.mem.set(addr.to_u64(), value) ?? mmu.mem }
+
+    # Write-only and unused APU register bits read back as 1
+    apu_read_mask : U16 -> U8
+    apu_read_mask = |addr|
+        match addr {
+            0xFF10 => 0x80
+            0xFF11 => 0x3F
+            0xFF12 => 0x00
+            0xFF13 => 0xFF
+            0xFF14 => 0xBF
+            0xFF16 => 0x3F
+            0xFF17 => 0x00
+            0xFF18 => 0xFF
+            0xFF19 => 0xBF
+            0xFF1A => 0x7F
+            0xFF1B => 0xFF
+            0xFF1C => 0x9F
+            0xFF1D => 0xFF
+            0xFF1E => 0xBF
+            0xFF20 => 0xFF
+            0xFF21 => 0x00
+            0xFF22 => 0x00
+            0xFF23 => 0xBF
+            0xFF24 => 0x00
+            0xFF25 => 0x00
+            _ => 0xFF # 0xFF15, 0xFF1F, and 0xFF27-0xFF2F are unmapped
+        }
+
+    apu_powered : Mmu -> Bool
+    apu_powered = |mmu| (mmu.mem.get(0xFF26) ?? 0x00).bitwise_and(0x80) != 0x00
+
+    push_sample_pair : Mmu, F32, F32 -> Mmu
+    push_sample_pair = |mmu, left, right| {
+        c = mmu.sample_count
+        if c.plus(2) > mmu.samples.len() {
+            mmu # ring full (no consumer draining): drop, keeping memory bounded
+        } else {
+            one = { ..mmu, samples: mmu.samples.set(c, left) ?? mmu.samples }
+            { ..one, samples: one.samples.set(c.plus(1), right) ?? one.samples, sample_count: c.plus(2) }
+        }
+    }
+
+    # Copy-out drain: the ring buffer must never be aliased by the returned
+    # list, or the next set would clone the whole ring
+    take_samples : Mmu -> { mmu : Mmu, samples : List(F32) }
+    take_samples = |mmu| {
+        n = mmu.sample_count
+        var out = List.repeat(0.0, 0)
+        var i = 0
+        while i < n {
+            out = out.append(mmu.samples.get(i) ?? 0.0)
+            i = i.plus(1)
+        }
+        { mmu: { ..mmu, sample_count: 0 }, samples: out }
+    }
+
+    take_apu_events : Mmu -> { mmu : Mmu, events : List(U8) }
+    take_apu_events = |mmu| { mmu: { ..mmu, apu_events: [] }, events: mmu.apu_events }
 
     write : Mmu, U16, U8 -> Mmu
     write = |mmu, addr, value|
@@ -189,6 +280,37 @@ Mmu := {
             match cart_ram_slot(mmu) {
                 Bank(b) => { ..mmu, cart_ram: mmu.cart_ram.set(b.shl_wrap(13).plus(addr.to_u64().minus(0xA000)), value) ?? mmu.cart_ram }
                 Invalid => mmu
+            }
+        } else if addr >= 0xFF10 and addr <= 0xFF25 {
+            if apu_powered(mmu) {
+                written = mmu.poke(addr, value)
+                # NRx4 bit 7 is a channel trigger event
+                if value.bitwise_and(0x80) != 0x00 {
+                    match addr {
+                        0xFF14 => { ..written, apu_events: written.apu_events.append(0) }
+                        0xFF19 => { ..written, apu_events: written.apu_events.append(1) }
+                        0xFF1E => { ..written, apu_events: written.apu_events.append(2) }
+                        0xFF23 => { ..written, apu_events: written.apu_events.append(3) }
+                        _ => written
+                    }
+                } else {
+                    written
+                }
+            } else {
+                mmu # power off gates the register file
+            }
+        } else if addr == 0xFF26 {
+            if value.bitwise_and(0x80) == 0x00 {
+                # power off: clear the register file and tell the APU
+                var m = mmu.poke(0xFF26, 0x00)
+                var a = 0xFF10.U16
+                while a <= 0xFF25 {
+                    m = m.poke(a, 0x00)
+                    a = a.plus(1)
+                }
+                { ..m, apu_events: m.apu_events.append(0xF0) }
+            } else {
+                mmu.poke(0xFF26, (mmu.mem.get(0xFF26) ?? 0x00).bitwise_and(0x0F).bitwise_or(0x80))
             }
         } else if addr == 0xFF02 {
             # Serial control: bit 7 starts a transfer; capture SB as the
@@ -422,3 +544,36 @@ expect Mmu.init(big_rom(0x13)).write(0x0000, 0x0A).write(0x4000, 0x08).read(0xA0
 # ROM-only: register writes are inert, RAM region is plain storage
 expect Mmu.init(test_rom).write(0x2000, 0x02).read(0x01FF) == 0x99
 expect Mmu.init(test_rom).write(0xA000, 0x77).read(0xA000) == 0x77
+
+# APU register read-back masks
+expect Mmu.init(test_rom).write(0xFF11, 0x00).read(0xFF11) == 0x3F
+expect Mmu.init(test_rom).write(0xFF12, 0x47).read(0xFF12) == 0x47
+expect Mmu.init(test_rom).write(0xFF1A, 0x00).read(0xFF1A) == 0x7F
+expect Mmu.init(test_rom).read(0xFF15) == 0xFF
+expect Mmu.init(test_rom).read(0xFF1F) == 0xFF
+expect {
+    masks = [
+        (0xFF10, 0x80), (0xFF11, 0x3F), (0xFF12, 0x00), (0xFF13, 0xFF), (0xFF14, 0xBF),
+        (0xFF16, 0x3F), (0xFF17, 0x00), (0xFF18, 0xFF), (0xFF19, 0xBF), (0xFF1A, 0x7F),
+        (0xFF1B, 0xFF), (0xFF1C, 0x9F), (0xFF1D, 0xFF), (0xFF1E, 0xBF), (0xFF20, 0xFF),
+        (0xFF21, 0x00), (0xFF22, 0x00), (0xFF23, 0xBF), (0xFF24, 0x00), (0xFF25, 0x00),
+    ]
+    masks.fold(Bool.True, |ok, (addr, mask)| {
+        m = Mmu.init(test_rom).write(addr, 0x00)
+        ok and m.read(addr) == mask
+    })
+}
+
+# NR52: power off clears and gates the register file; power returns
+expect {
+    m = Mmu.init(test_rom).write(0xFF12, 0xF3).write(0xFF26, 0x00)
+    m.read(0xFF26) == 0x70 and m.read(0xFF12) == 0x00 and m.write(0xFF12, 0xF3).read(0xFF12) == 0x00
+}
+expect Mmu.init(test_rom).write(0xFF26, 0x00).write(0xFF26, 0x80).read(0xFF26) == 0xF0
+
+# Trigger writes reach the event queue; gated while off
+expect {
+    r = Mmu.init(test_rom).write(0xFF19, 0x87).take_apu_events()
+    r.events == [1] and r.mmu.take_apu_events().events == []
+}
+expect Mmu.init(test_rom).write(0xFF26, 0x00).write(0xFF19, 0x87).apu_events == [0xF0]

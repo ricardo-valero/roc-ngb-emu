@@ -128,6 +128,7 @@ Ppu := {
         ly16 = ly.to_u16()
 
         # background + window pass: raw color indices, then palette shades
+        wl = ppu.window_line
         var raw = List.repeat(0.U8, 160)
         var fb = ppu.framebuffer
         var window_rendered = Bool.False
@@ -136,7 +137,7 @@ Ppu := {
             in_window = win_enabled and x.plus(7) >= wx
             color =
                 if in_window {
-                    tile_color(mmu, lcdc, 0x40, x.plus(7).minus(wx), ppu.window_line.to_u16())
+                    tile_color(mmu, lcdc, 0x40, x.plus(7).minus(wx), wl.to_u16())
                 } else if bg_enabled {
                     tile_color(mmu, lcdc, 0x08, x.plus(scx).bitwise_and(0xFF), ly16.plus(scy).bitwise_and(0xFF))
                 } else {
@@ -160,7 +161,7 @@ Ppu := {
                 fb
             }
 
-        next_window_line = if window_rendered { ppu.window_line.plus_wrap(1) } else { ppu.window_line }
+        next_window_line = if window_rendered { wl.plus_wrap(1) } else { wl }
         { ..ppu, framebuffer: fb2, window_line: next_window_line }
     }
 

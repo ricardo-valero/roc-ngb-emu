@@ -6,6 +6,7 @@ import /Cpu/Alu
 import /Cpu/Instruction
 import /Cpu/Register
 import /Cpu/Register/Status
+import /Apu
 import /Mmu
 import /Ppu
 
@@ -13,6 +14,7 @@ GameBoy := {
     reg : Register,
     mmu : Mmu,
     ppu : Ppu,
+    apu : Apu,
     ime : Bool,
     halted : Bool,
     ei_pending : Bool,
@@ -24,6 +26,7 @@ GameBoy := {
             reg: Register.init({}),
             mmu: Mmu.init(rom),
             ppu: Ppu.init({}),
+            apu: Apu.init({}),
             ime: Bool.False,
             halted: Bool.False,
             ei_pending: Bool.False,
@@ -34,10 +37,21 @@ GameBoy := {
     serial : GameBoy -> List(U8)
     serial = |gb| gb.mmu.serial()
 
+    # Bus read for harnesses (e.g. Blargg's memory-reporting test protocol)
+    peek : GameBoy, U16 -> U8
+    peek = |gb, addr| gb.mmu.read(addr)
+
     framebuffer : GameBoy -> List(U8)
     framebuffer = |gb| gb.ppu.frame()
 
     no_buttons = |_| Mmu.no_buttons({})
+
+    # Drain the APU's generated 48 kHz interleaved stereo samples
+    take_samples : GameBoy -> { gb : GameBoy, samples : List(F32) }
+    take_samples = |gb| {
+        t = gb.mmu.take_samples()
+        { gb: { ..gb, mmu: t.mmu }, samples: t.samples }
+    }
 
     # Run until the next VBlank entry (LY reaching 144), bounded so a wedged
     # ROM cannot hang the caller. A frame is ~17.6k steps even when halted.
@@ -76,11 +90,12 @@ GameBoy := {
         }
     }
 
-    # Every path leaves through here so the timer and PPU see all elapsed cycles
+    # Every path leaves through here so the timer, PPU, and APU see all cycles
     finish : GameBoy, U64 -> (GameBoy, U64)
     finish = |gb, cycles| {
         r = gb.ppu.tick(gb.mmu.tick(cycles), cycles)
-        ({ ..gb, mmu: r.mmu, ppu: r.ppu }, cycles)
+        a = gb.apu.tick(r.mmu, cycles)
+        ({ ..gb, mmu: a.mmu, ppu: r.ppu, apu: a.apu }, cycles)
     }
 
     dispatch : GameBoy, U8 -> (GameBoy, U64)
