@@ -18,6 +18,7 @@ GameBoy := {
     ime : Bool,
     halted : Bool,
     ei_pending : Bool,
+    breakpoint : [None, At(U16)],
 }.{
     init : List(U8) -> GameBoy
     init = |rom| {
@@ -30,6 +31,7 @@ GameBoy := {
             ime: Bool.False,
             halted: Bool.False,
             ei_pending: Bool.False,
+            breakpoint: None,
         }
         gb
     }
@@ -44,6 +46,17 @@ GameBoy := {
     framebuffer : GameBoy -> List(U8)
     framebuffer = |gb| gb.ppu.frame()
 
+    # Debug renders (see Ppu): 256x256 background map, 128x192 tile sheet,
+    # 64x80 OAM grid — shades 0..3, blittable by any host
+    debug_background : GameBoy -> List(U8)
+    debug_background = |gb| Ppu.debug_background(gb.mmu)
+
+    debug_tiles : GameBoy -> List(U8)
+    debug_tiles = |gb| Ppu.debug_tiles(gb.mmu)
+
+    debug_oam : GameBoy -> List(U8)
+    debug_oam = |gb| Ppu.debug_oam(gb.mmu)
+
     no_buttons = |_| Mmu.no_buttons({})
 
     # Drain the APU's generated 48 kHz interleaved stereo samples
@@ -53,25 +66,51 @@ GameBoy := {
         { gb: { ..gb, mmu: t.mmu }, samples: t.samples }
     }
 
-    # Run until the next VBlank entry (LY reaching 144), bounded so a wedged
-    # ROM cannot hang the caller. A frame is ~17.6k steps even when halted.
-    run_frame : GameBoy, _ -> GameBoy
-    run_frame = |gb0, buttons| {
+    set_breakpoint : GameBoy, U16 -> GameBoy
+    set_breakpoint = |gb, addr| { ..gb, breakpoint: At(addr) }
+
+    clear_breakpoint : GameBoy -> GameBoy
+    clear_breakpoint = |gb| { ..gb, breakpoint: None }
+
+    at_breakpoint : GameBoy, U16 -> Bool
+    at_breakpoint = |gb, pc|
+        match gb.breakpoint {
+            At(addr) => addr == pc
+            None => Bool.False
+        }
+
+    # Run until the next VBlank entry (LY reaching 144) or the breakpoint,
+    # bounded so a wedged ROM cannot hang the caller. A frame is ~17.6k
+    # steps even when halted. The breakpoint check is skipped before the
+    # first step so a machine stopped at the breakpoint resumes past it.
+    run_until : GameBoy, _ -> (GameBoy, [FrameReady, BreakpointHit])
+    run_until = |gb0, buttons| {
         var gb = { ..gb0, mmu: gb0.mmu.set_buttons(buttons) }
         var budget = 40000.U64
-        var vblank_seen = Bool.False
-        while budget > 0 and vblank_seen == Bool.False {
-            was_ly = gb.mmu.read(0xFF44)
-            gb = match gb.step() { (g, _) => g }
-            if was_ly != 144 and gb.mmu.read(0xFF44) == 144 {
-                vblank_seen = Bool.True
+        var stopped = Bool.False
+        var hit = Bool.False
+        var first = Bool.True
+        while budget > 0 and stopped == Bool.False {
+            if first == Bool.False and at_breakpoint(gb, gb.reg.read16(ProgramCounter)) {
+                stopped = Bool.True
+                hit = Bool.True
             } else {
-                {}
+                was_ly = gb.mmu.read(0xFF44)
+                gb = match gb.step() { (g, _) => g }
+                if was_ly != 144 and gb.mmu.read(0xFF44) == 144 {
+                    stopped = Bool.True
+                } else {
+                    {}
+                }
             }
+            first = Bool.False
             budget = budget.minus(1)
         }
-        gb
+        if hit { (gb, BreakpointHit) } else { (gb, FrameReady) }
     }
+
+    run_frame : GameBoy, _ -> GameBoy
+    run_frame = |gb0, buttons| match gb0.run_until(buttons) { (gb, _) => gb }
 
     step : GameBoy -> (GameBoy, U64)
     step = |gb| {
@@ -537,4 +576,42 @@ expect {
     gb.mmu.read(0xFF44) == 144
     and fb.len() == 23040
     and fb.fold(Bool.True, |ok, shade| ok and shade <= 3)
+}
+
+# run_until without a breakpoint stops for the frame, like run_frame
+expect {
+    match GameBoy.init(rom_with([0x18, 0xFE])).run_until(GameBoy.no_buttons({})) {
+        (gb, FrameReady) => gb.mmu.read(0xFF44) == 144
+        (_, BreakpointHit) => Bool.False
+    }
+}
+
+# Breakpoint hit: NOP at 0x0100, JR -2 self-loop at 0x0101. Stop lands on
+# the breakpoint address with its instruction not yet executed.
+expect {
+    gb0 = GameBoy.init(rom_with([0x00, 0x18, 0xFE])).set_breakpoint(0x0101)
+    match gb0.run_until(GameBoy.no_buttons({})) {
+        (gb, BreakpointHit) => gb.reg.read16(ProgramCounter) == 0x0101
+        (_, FrameReady) => Bool.False
+    }
+}
+
+# Resume after hit: the first step executes the breakpoint instruction
+# (self-loop re-hits it); after clearing, the frame completes.
+expect {
+    gb0 = GameBoy.init(rom_with([0x00, 0x18, 0xFE])).set_breakpoint(0x0101)
+    match gb0.run_until(GameBoy.no_buttons({})) {
+        (gb1, BreakpointHit) =>
+            match gb1.run_until(GameBoy.no_buttons({})) {
+                (gb2, BreakpointHit) =>
+                    match gb2.clear_breakpoint().run_until(GameBoy.no_buttons({})) {
+                        (gb3, FrameReady) => gb3.mmu.read(0xFF44) == 144
+                        (_, BreakpointHit) => Bool.False
+                    }
+
+                (_, FrameReady) => Bool.False
+            }
+
+        (_, FrameReady) => Bool.False
+    }
 }
