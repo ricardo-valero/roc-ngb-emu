@@ -5,3 +5,4 @@ spike/rocray-hello/main
 /main
 golden/*.ppm
 golden/*.wav
+web/*.wasm

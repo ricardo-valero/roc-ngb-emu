@@ -27,31 +27,37 @@ Esc quits.
 
 ## Play in the browser (roc-canvas)
 
-The core also runs on `roc-canvas`, a wasm32 Roc platform (Zig host + WebGPU
-renderer) that lives in a **sibling checkout** — the app there imports this
-repo's package and ROM by relative path, so keep the two directories next to
-each other:
+The browser app lives here (`example/web.roc` + `web/`), built on
+[roc-canvas](https://github.com/ricardo-valero/roc-canvas) — a wasm32 Roc
+platform (Zig host + WebGPU renderer) referenced by relative path until it
+publishes release bundles, so keep the two repos as siblings:
 
 ```
 dev/
-├── roc-ngb-emu/     # this repo (core + rom/play.gb)
+├── roc-ngb-emu/     # this repo: core, rom/play.gb, example/web.roc, web/
 └── roc-canvas/      # the platform (github.com/ricardo-valero/roc-canvas)
 ```
 
-Build and serve (inside roc-canvas's own `nix develop`):
+One-time platform build (and again after any change to its Zig host):
 
 ```bash
-cd ../roc-canvas
-zig build                                        # host object -> platform/targets/wasm32/
-roc build app/play.roc --output=www/play.wasm    # embeds ../roc-ngb-emu/rom/play.gb
-python3 -m http.server 8642 --directory www      # then open http://localhost:8642/
+(cd ../roc-canvas && nix develop --command zig build)
+```
+
+Then from this repo (inside `nix develop`):
+
+```bash
+roc build example/web.roc --output=web/play.wasm   # embeds rom/play.gb
+python3 -m http.server 8642 --directory web        # open http://localhost:8642/
 ```
 
 Same controls as the windowed app (no Esc — it's a browser tab). The page
 picks WebGPU and falls back to Canvas2D; the status line shows which. After
 rebuilding the Zig host, pass `--no-cache` to `roc build` so the platform is
-re-linked. Headless check without a browser: `node www/test.js www/play.wasm 300`.
-Full spike evidence and benchmarks: `openspec/changes/wasm-platform-spike/report.md`.
+re-linked. Headless check without a browser:
+`node ../roc-canvas/www/test.js web/play.wasm 300` (node is in roc-canvas's
+shell). Full spike evidence and benchmarks:
+`openspec/changes/wasm-platform-spike/report.md`.
 
 ## Verification
 

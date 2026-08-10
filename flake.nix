@@ -42,7 +42,7 @@
     in {
       default = pkgs.mkShell {
         buildInputs = builtins.attrValues {
-          inherit (pkgs) nixd alejandra;
+          inherit (pkgs) nixd alejandra python3;
           inherit (roc-pkgs) nightly;
           inherit (self-pkgs) fetch-roms run-blargg check-acid2 check-sound run-ladder;
         };
