@@ -6,6 +6,7 @@ import /Cpu/Alu
 import /Cpu/Instruction
 import /Cpu/Register
 import /Cpu/Register/Status
+import /Apu
 import /Mmu
 import /Ppu
 
@@ -13,6 +14,7 @@ GameBoy := {
     reg : Register,
     mmu : Mmu,
     ppu : Ppu,
+    apu : Apu,
     ime : Bool,
     halted : Bool,
     ei_pending : Bool,
@@ -24,6 +26,7 @@ GameBoy := {
             reg: Register.init({}),
             mmu: Mmu.init(rom),
             ppu: Ppu.init({}),
+            apu: Apu.init({}),
             ime: Bool.False,
             halted: Bool.False,
             ei_pending: Bool.False,
@@ -34,10 +37,21 @@ GameBoy := {
     serial : GameBoy -> List(U8)
     serial = |gb| gb.mmu.serial()
 
+    # Bus read for harnesses (e.g. Blargg's memory-reporting test protocol)
+    peek : GameBoy, U16 -> U8
+    peek = |gb, addr| gb.mmu.read(addr)
+
     framebuffer : GameBoy -> List(U8)
     framebuffer = |gb| gb.ppu.frame()
 
     no_buttons = |_| Mmu.no_buttons({})
+
+    # Drain the APU's generated 48 kHz interleaved stereo samples
+    take_samples : GameBoy -> { gb : GameBoy, samples : List(F32) }
+    take_samples = |gb| {
+        t = gb.mmu.take_samples()
+        { gb: { ..gb, mmu: t.mmu }, samples: t.samples }
+    }
 
     # Run until the next VBlank entry (LY reaching 144), bounded so a wedged
     # ROM cannot hang the caller. A frame is ~17.6k steps even when halted.
@@ -76,11 +90,26 @@ GameBoy := {
         }
     }
 
-    # Every path leaves through here so the timer and PPU see all elapsed cycles
+    # Every path leaves through here so the timer, PPU, and APU see all cycles
     finish : GameBoy, U64 -> (GameBoy, U64)
     finish = |gb, cycles| {
-        r = gb.ppu.tick(gb.mmu.tick(cycles), cycles)
-        ({ ..gb, mmu: r.mmu, ppu: r.ppu }, cycles)
+        # Deconstruct completely so no field is co-owned by a live `gb` while
+        # the components mutate their state — a shared bus or sample buffer
+        # degrades every write into a full clone.
+        reg = gb.reg
+        ime = gb.ime
+        halted = gb.halted
+        ei_pending = gb.ei_pending
+        ppu0 = gb.ppu
+        apu0 = gb.apu
+        mmu0 = gb.mmu
+        r = ppu0.tick(mmu0.tick(cycles), cycles)
+        ppu2 = r.ppu
+        a = apu0.tick(r.mmu, cycles)
+        apu2 = a.apu
+        gb2 : GameBoy
+        gb2 = { reg: reg, mmu: a.mmu, ppu: ppu2, apu: apu2, ime: ime, halted: halted, ei_pending: ei_pending }
+        (gb2, cycles)
     }
 
     dispatch : GameBoy, U8 -> (GameBoy, U64)
@@ -109,7 +138,9 @@ GameBoy := {
         pc = gb0.reg.read16(ProgramCounter)
         opcode = gb0.mmu.read(pc)
         r = execute(gb0, pc.plus_wrap(1), Instruction.lookup(opcode))
-        gb1 = { ..r.gb, reg: r.gb.reg.write16(ProgramCounter, r.pc) }
+        spent = r.cycles
+        next_pc = r.pc
+        gb1 = { ..r.gb, reg: r.gb.reg.write16(ProgramCounter, next_pc) }
         # EI takes effect after the instruction that follows it (DI cancels)
         gb2 =
             if was_ei_pending and gb1.ei_pending {
@@ -117,7 +148,7 @@ GameBoy := {
             } else {
                 gb1
             }
-        finish(gb2, r.cycles)
+        finish(gb2, spent)
     }
 
     imm16 : GameBoy, U16 -> U16

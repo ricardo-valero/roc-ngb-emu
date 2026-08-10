@@ -9,6 +9,7 @@ roc-ray 0.9.0's host exposes only UTF-8 `read_file!` — no binary reads, no wri
 ## What Changes
 
 - Upstream (lukewilliamboswell/roc-ray): propose and contribute `read_bytes! : Host, Str => Try(List(U8), ...)` mirroring the existing `read_file!` plumbing (`Host.roc` → `HostHost.roc` → Zig host effect), and open the conversation about a `write_bytes!` counterpart for save persistence.
+- Same conversation, second ask: a raw PCM audio-stream API (raylib's `AudioStream`/`UpdateAudioStream` exposed through the platform) — the APU core (2026-08-09) generates 48 kHz stereo samples that currently have no speaker path; roc-ray 0.9.0's audio API is file/tone-based only.
 - Here, once released: `example/play.roc` loads the ROM at runtime (path via config or a simple picker) instead of build-time ingestion; `fetch-roms` no longer needs to seed `rom/play.gb`.
 - Version discipline unchanged: adopting the new roc-ray release pairs with its declared Roc nightly (bump flake + platform URL together).
 

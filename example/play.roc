@@ -58,7 +58,11 @@ render! = |model, host, frame| {
         select: host.key_down(KeyBackspace),
     }
 
-    gb = model.gb.run_frame(buttons)
+    ran = model.gb.run_frame(buttons)
+    # No speaker path yet (roc-ray has no PCM streaming): drop the APU
+    # samples each frame so the buffer never grows
+    drained = ran.take_samples()
+    gb = drained.gb
 
     model.screen.update!(gb.framebuffer().map(shade_color))?
 

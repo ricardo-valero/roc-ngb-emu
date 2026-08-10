@@ -35,10 +35,15 @@ main! = |args| {
                 verdict = 1
             } else if text.contains("Failed") {
                 verdict = 2
+            } else if memory_status(gb) == 0 {
+                verdict = 1
+            } else if memory_status(gb) < 0x80 {
+                verdict = 2
             }
         }
     }
     Stdout.line!("serial: ${serial_text(gb)}")?
+    Stdout.line!("memory: ${memory_text(gb)}")?
     match verdict {
         1 => {
             Stdout.line!("PASSED")?
@@ -73,6 +78,32 @@ step_gb = |gb| match gb.step() { (g, _) => g }
 
 serial_text : GameBoy -> Str
 serial_text = |gb| Str.from_utf8(gb.serial()) ?? ""
+
+# Blargg's memory-reporting protocol: signature DE B0 61 at 0xA001, status
+# at 0xA000 (0x80 while running, 0 = pass), text from 0xA004.
+has_signature : GameBoy -> Bool
+has_signature = |gb|
+    gb.peek(0xA001) == 0xDE and gb.peek(0xA002) == 0xB0 and gb.peek(0xA003) == 0x61
+
+memory_status : GameBoy -> U8
+memory_status = |gb| if has_signature(gb) { gb.peek(0xA000) } else { 0x80 }
+
+memory_text : GameBoy -> Str
+memory_text = |gb| {
+    var bytes = [].append(0x20)
+    var addr = 0xA004.U16
+    var going = has_signature(gb)
+    while going and addr < 0xA200 {
+        byte = gb.peek(addr)
+        if byte == 0x00 {
+            going = Bool.False
+        } else {
+            bytes = bytes.append(byte)
+            addr = addr.plus(1)
+        }
+    }
+    Str.from_utf8(bytes) ?? ""
+}
 
 read_arg_file_path : List(OsStr) -> Try(Path, [FailedToReadArgs(Str), ..])
 read_arg_file_path = |args|

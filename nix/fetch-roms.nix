@@ -38,6 +38,31 @@ writeShellApplication {
       fi
     done
 
+    # dmg_sound: APU test ROMs (01-registers is the conformance gate)
+    snd="$PWD/rom/dmg_sound"
+    snd_base="https://github.com/retrio/gb-test-roms/raw/master/dmg_sound/rom_singles"
+    snd_roms=(
+      "01-registers.gb"
+      "02-len ctr.gb"
+      "03-trigger.gb"
+      "04-sweep.gb"
+      "05-sweep details.gb"
+      "06-overflow on trigger.gb"
+      "07-len sweep period sync.gb"
+      "08-len ctr during power.gb"
+      "09-wave read while on.gb"
+      "10-wave trigger while on.gb"
+      "11-regs after power.gb"
+      "12-wave write while on.gb"
+    )
+    mkdir -p "$snd"
+    for rom in "''${snd_roms[@]}"; do
+      if [ ! -f "$snd/$rom" ]; then
+        echo "fetching dmg_sound/$rom"
+        curl -fsSL "$snd_base/''${rom// /%20}" -o "$snd/$rom"
+      fi
+    done
+
     # dmg-acid2: PPU rendering oracle (MIT, mattcurrie/dmg-acid2)
     acid="$PWD/rom/dmg-acid2.gb"
     if [ ! -f "$acid" ]; then

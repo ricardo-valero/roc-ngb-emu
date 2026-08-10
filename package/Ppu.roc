@@ -127,16 +127,20 @@ Ppu := {
         win_enabled = bg_enabled and lcdc.bitwise_and(0x20) != 0x00 and ly >= wy
         ly16 = ly.to_u16()
 
-        # background + window pass: raw color indices, then palette shades
-        var raw = List.repeat(0.U8, 160)
+        # background + window pass: raw color indices, then palette shades.
+        # Read every ppu field before taking the framebuffer so the list is
+        # uniquely owned (an aliased list would clone 23 KiB per scanline).
+        dots = ppu.dots
+        wl = ppu.window_line
         var fb = ppu.framebuffer
+        var raw = List.repeat(0.U8, 160)
         var window_rendered = Bool.False
         var x = 0.U16
         while x < 160 {
             in_window = win_enabled and x.plus(7) >= wx
             color =
                 if in_window {
-                    tile_color(mmu, lcdc, 0x40, x.plus(7).minus(wx), ppu.window_line.to_u16())
+                    tile_color(mmu, lcdc, 0x40, x.plus(7).minus(wx), wl.to_u16())
                 } else if bg_enabled {
                     tile_color(mmu, lcdc, 0x08, x.plus(scx).bitwise_and(0xFF), ly16.plus(scy).bitwise_and(0xFF))
                 } else {
@@ -160,8 +164,10 @@ Ppu := {
                 fb
             }
 
-        next_window_line = if window_rendered { ppu.window_line.plus_wrap(1) } else { ppu.window_line }
-        { ..ppu, framebuffer: fb2, window_line: next_window_line }
+        next_window_line = if window_rendered { wl.plus_wrap(1) } else { wl }
+        result : Ppu
+        result = { dots: dots, framebuffer: fb2, window_line: next_window_line }
+        result
     }
 
     # Fetch the 2-bit color of a background/window pixel. map_mask selects the
