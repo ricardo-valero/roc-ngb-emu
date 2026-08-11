@@ -8,8 +8,11 @@ import pf.Path
 import pf.Stdout
 import ngb.GameBoy
 
-# Headless Blargg runner: execute a test ROM until its serial output reports
-# "Passed"/"Failed", or the cycle budget runs out. Exit 0 only on "Passed".
+# Headless test-ROM runner: execute a ROM until a verdict or the cycle
+# budget runs out. Exit 0 only on pass. Understands three protocols:
+# Blargg serial text ("Passed"/"Failed"), Blargg's memory protocol
+# (signature at 0xA001, status at 0xA000), and mooneye's serial bytes
+# (Fibonacci 3,5,8,13,21,34 = pass, six 0x42 = fail).
 
 chunk_steps : U64
 chunk_steps = 100_000
@@ -38,6 +41,10 @@ main! = |args| {
             } else if memory_status(gb) == 0 {
                 verdict = 1
             } else if memory_status(gb) < 0x80 {
+                verdict = 2
+            } else if mooneye_status(gb) == 1 {
+                verdict = 1
+            } else if mooneye_status(gb) == 2 {
                 verdict = 2
             }
         }
@@ -87,6 +94,39 @@ has_signature = |gb|
 
 memory_status : GameBoy -> U8
 memory_status = |gb| if has_signature(gb) { gb.peek(0xA000) } else { 0x80 }
+
+# mooneye protocol: on completion the ROM sends six bytes over serial —
+# Fibonacci 3,5,8,13,21,34 on pass, 0x42 six times on fail
+mooneye_status : GameBoy -> U8
+mooneye_status = |gb| {
+    bytes = gb.serial()
+    if bytes.len() >= 6 {
+        if serial_prefix_is(bytes, [3, 5, 8, 13, 21, 34]) {
+            1
+        } else if serial_prefix_is(bytes, [0x42, 0x42, 0x42, 0x42, 0x42, 0x42]) {
+            2
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+serial_prefix_is : List(U8), List(U8) -> Bool
+serial_prefix_is = |bytes, want| {
+    var ok = Bool.True
+    var i = 0
+    while i < want.len() {
+        if (bytes.get(i) ?? 0xFF) != (want.get(i) ?? 0x00) {
+            ok = Bool.False
+        } else {
+            {}
+        }
+        i = i.plus(1)
+    }
+    ok
+}
 
 memory_text : GameBoy -> Str
 memory_text = |gb| {

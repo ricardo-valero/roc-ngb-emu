@@ -30,6 +30,10 @@
         inherit (self-pkgs) fetch-roms;
         roc = roc-pkgs.nightly;
       };
+      run-ladder = pkgs.callPackage ./nix/run-ladder.nix {
+        inherit (self-pkgs) fetch-roms;
+        roc = roc-pkgs.nightly;
+      };
     });
     devShells = nixpkgs.lib.genAttrs systems (system: let
       pkgs = nixpkgs.legacyPackages.${system};
@@ -38,9 +42,9 @@
     in {
       default = pkgs.mkShell {
         buildInputs = builtins.attrValues {
-          inherit (pkgs) nixd alejandra;
+          inherit (pkgs) nixd alejandra python3;
           inherit (roc-pkgs) nightly;
-          inherit (self-pkgs) fetch-roms run-blargg check-acid2 check-sound;
+          inherit (self-pkgs) fetch-roms run-blargg check-acid2 check-sound run-ladder;
         };
       };
     });

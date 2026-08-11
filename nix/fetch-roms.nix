@@ -1,12 +1,15 @@
 # Fetch Blargg's cpu_instrs individual test ROMs into ./rom (untracked).
-# Source: https://github.com/retrio/gb-test-roms
+# Sources: https://github.com/retrio/gb-test-roms (Blargg),
+# https://gekkio.fi/files/mooneye-test-suite/ (mooneye acceptance ROMs)
 {
   writeShellApplication,
   curl,
+  gnutar,
+  xz,
 }:
 writeShellApplication {
   name = "fetch-roms";
-  runtimeInputs = [curl];
+  runtimeInputs = [curl gnutar xz];
   text = ''
     dir="$PWD/rom/cpu_instrs"
     base="https://github.com/retrio/gb-test-roms/raw/master/cpu_instrs/individual"
@@ -68,6 +71,41 @@ writeShellApplication {
     if [ ! -f "$acid" ]; then
       echo "fetching dmg-acid2.gb"
       curl -fsSL "https://github.com/mattcurrie/dmg-acid2/releases/download/v1.0/dmg-acid2.gb" -o "$acid"
+    fi
+
+    # accuracy ladder: Blargg timing ROMs
+    lad="$PWD/rom/ladder/blargg"
+    mkdir -p "$lad"
+    lad_roms=(
+      "instr_timing/instr_timing.gb"
+      "mem_timing/mem_timing.gb"
+      "mem_timing/individual/01-read_timing.gb"
+      "mem_timing/individual/02-write_timing.gb"
+      "mem_timing/individual/03-modify_timing.gb"
+    )
+    for path in "''${lad_roms[@]}"; do
+      rom="$(basename "$path")"
+      if [ ! -f "$lad/$rom" ]; then
+        echo "fetching ladder/blargg/$rom"
+        curl -fsSL "https://github.com/retrio/gb-test-roms/raw/master/''${path// /%20}" -o "$lad/$rom"
+      fi
+    done
+
+    # accuracy ladder: mooneye halt/timer acceptance ROMs (official tarball)
+    moon="$PWD/rom/ladder/mooneye"
+    mts="mts-20240926-1737-443f6e1"
+    if [ ! -f "$moon/.done" ]; then
+      echo "fetching mooneye test suite ($mts)"
+      mkdir -p "$moon"
+      tmp="$(mktemp -d)"
+      curl -fsSL "https://gekkio.fi/files/mooneye-test-suite/$mts/$mts.tar.xz" -o "$tmp/mts.tar.xz"
+      tar -xJf "$tmp/mts.tar.xz" -C "$tmp"
+      cp "$tmp/$mts"/acceptance/timer/*.gb "$moon/"
+      cp "$tmp/$mts"/acceptance/halt_ime0_ei.gb \
+         "$tmp/$mts"/acceptance/halt_ime0_nointr_timing.gb \
+         "$tmp/$mts"/acceptance/halt_ime1_timing.gb "$moon/"
+      rm -rf "$tmp"
+      touch "$moon/.done"
     fi
 
     # rom/play.gb: the ROM the play app embeds at build time.

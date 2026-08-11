@@ -255,6 +255,99 @@ Ppu := {
         fb
     }
 
+    # --- debug renders: pure views of VRAM/OAM through the same tile fetch
+    # and palette rules as the scanline renderer, so they cannot drift from
+    # real rendering. Hosts blit these; they never interpret VRAM. ---
+
+    # Full 256x256 background map (active map + addressing mode, BGP shades)
+    debug_background : Mmu -> List(U8)
+    debug_background = |mmu| {
+        lcdc = mmu.read(0xFF40)
+        bgp = mmu.read(0xFF47)
+        var out = List.repeat(0.U8, 65536)
+        var y = 0.U16
+        while y < 256 {
+            var x = 0.U16
+            while x < 256 {
+                shade = palette_shade(bgp, tile_color(mmu, lcdc, 0x08, x, y))
+                out = out.set(y.to_u64().shl_wrap(8).plus(x.to_u64()), shade) ?? out
+                x = x.plus(1)
+            }
+            y = y.plus(1)
+        }
+        out
+    }
+
+    # All 384 VRAM tiles on a 16x24 grid (128x192 px), raw 2bpp colors as
+    # shades — palette-agnostic on purpose
+    debug_tiles : Mmu -> List(U8)
+    debug_tiles = |mmu| {
+        var out = List.repeat(0.U8, 24576)
+        var t = 0.U16
+        while t < 384 {
+            gx = t.bitwise_and(0x0F).to_u64().shl_wrap(3)
+            gy = t.shr_zf_wrap(4).to_u64().shl_wrap(3)
+            var py = 0.U16
+            while py < 8 {
+                addr = U16.plus(0x8000, t.shl_wrap(4)).plus(py.shl_wrap(1))
+                var px = 0.U16
+                while px < 8 {
+                    idx = gy.plus(py.to_u64()).shl_wrap(7).plus(gx).plus(px.to_u64())
+                    out = out.set(idx, pixel_from_tile_row(mmu, addr, px)) ?? out
+                    px = px.plus(1)
+                }
+                py = py.plus(1)
+            }
+            t = t.plus(1)
+        }
+        out
+    }
+
+    # One OAM cell pixel with flips and the sprite's palette applied;
+    # transparent (color 0) renders as shade 0
+    oam_cell_pixel : Mmu, U16, U16, U16, U16 -> U8
+    oam_cell_pixel = |mmu, base, height, col0, row0| {
+        attrs = mmu.read(base.plus(3))
+        row = if attrs.bitwise_and(0x40) != 0x00 { height.minus(1).minus(row0) } else { row0 }
+        col = if attrs.bitwise_and(0x20) != 0x00 { U16.minus(7, col0) } else { col0 }
+        tile = mmu.read(base.plus(2))
+        tile_index = if height == 16 { tile.bitwise_and(0xFE) } else { tile }
+        addr = U16.plus(0x8000, tile_index.to_u16().shl_wrap(4)).plus(row.shl_wrap(1))
+        color = pixel_from_tile_row(mmu, addr, col)
+        if color == 0x00 {
+            0
+        } else {
+            obp = if attrs.bitwise_and(0x10) != 0x00 { mmu.read(0xFF49) } else { mmu.read(0xFF48) }
+            palette_shade(obp, color)
+        }
+    }
+
+    # The 40 OAM slots on an 8x5 grid of 8x16 cells (64x80 px); in 8x8
+    # sprite mode the lower half of each cell stays blank
+    debug_oam : Mmu -> List(U8)
+    debug_oam = |mmu| {
+        height = if mmu.read(0xFF40).bitwise_and(0x04) != 0x00 { 16.U16 } else { 8.U16 }
+        var out = List.repeat(0.U8, 5120)
+        var i = 0.U16
+        while i < 40 {
+            base = U16.plus(0xFE00, i.shl_wrap(2))
+            cx = i.bitwise_and(0x07).to_u64().shl_wrap(3)
+            cy = i.shr_zf_wrap(3).to_u64().shl_wrap(4)
+            var row = 0.U16
+            while row < height {
+                var col = 0.U16
+                while col < 8 {
+                    idx = cy.plus(row.to_u64()).shl_wrap(6).plus(cx).plus(col.to_u64())
+                    out = out.set(idx, oam_cell_pixel(mmu, base, height, col, row)) ?? out
+                    col = col.plus(1)
+                }
+                row = row.plus(1)
+            }
+            i = i.plus(1)
+        }
+        out
+    }
+
     # 2-bit color of a sprite pixel (0 = transparent); x/ly in screen space
     sprite_color : Mmu, U16, U16, U16, U16 -> U8
     sprite_color = |mmu, base, height, x, ly16| {
@@ -470,4 +563,69 @@ expect {
         .write(0xFF40, 0x97) # 8x16 mode
     r = f.ppu.tick(m, 456 * 8 + 81)
     pixel_at(r, 0, 0) == 0 and pixel_at(r, 0, 8) == 3
+}
+
+# --- debug renders ---
+
+# Background map: at scroll (0,0) the full 160x144 viewport matches the
+# framebuffer after a rendered frame (sprites disabled)
+expect {
+    f = fresh({})
+    m = paint_tile(f.mmu, 0x8010).poke(0x9800, 0x01).poke(0x9821, 0x01).write(0xFF47, 0xE4)
+    r = f.ppu.tick(m, 70224)
+    map = Ppu.debug_background(r.mmu)
+    var ok = Bool.True
+    var y = 0.U64
+    while y < 144 {
+        var x = 0.U64
+        while x < 160 {
+            fb_px = r.ppu.framebuffer.get(y * 160 + x) ?? 0xFF
+            map_px = map.get(y * 256 + x) ?? 0xFE
+            if fb_px != map_px {
+                ok = Bool.False
+            } else {
+                {}
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    ok and map.len() == 65536 and (map.get(256 * 8 + 8) ?? 0) == 3 # painted map cell (1,1) at pixel (8,8)
+}
+
+# Tile data: painted tile 1 fills grid cell (1,0); tile 0 stays blank
+expect {
+    m = paint_tile(fresh({}).mmu, 0x8010)
+    tiles = Ppu.debug_tiles(m)
+    tiles.len() == 24576
+    and (tiles.get(8) ?? 0) == 3 # tile 1, pixel (0,0) -> out (8,0)
+    and (tiles.get(15) ?? 0) == 3
+    and (tiles.get(0) ?? 9) == 0 # tile 0 blank
+    and (tiles.get(128 * 8 + 8) ?? 9) == 0 # grid row 1 blank
+}
+
+# OAM: slot 0 with X-flipped half-colored row renders flipped with OBP0
+expect {
+    f = fresh({})
+    m = f.mmu
+        .poke(0x8020, 0xF0).poke(0x8021, 0x00) # tile 2, row 0: left half color 1
+        .poke(0xFE00, 16).poke(0xFE01, 8).poke(0xFE02, 0x02).poke(0xFE03, 0x20) # x-flip
+        .write(0xFF48, 0xE4)
+        .write(0xFF40, 0x93)
+    oam = Ppu.debug_oam(m)
+    oam.len() == 5120
+    and (oam.get(0) ?? 9) == 0 # flipped: left pixel transparent
+    and (oam.get(7) ?? 0) == 1 # right pixel shade 1 via OBP0
+    and (oam.get(8) ?? 9) == 0 # slot 1 cell blank
+}
+
+# OAM: OBP1 selection via attr bit 4
+expect {
+    f = fresh({})
+    m = paint_tile(f.mmu, 0x8010)
+        .poke(0xFE00, 16).poke(0xFE01, 8).poke(0xFE02, 0x01).poke(0xFE03, 0x10) # OBP1
+        .write(0xFF48, 0xE4) # OBP0: 3 -> 3
+        .write(0xFF49, 0x40) # OBP1: 3 -> 1
+        .write(0xFF40, 0x93)
+    (Ppu.debug_oam(m).get(0) ?? 0) == 1
 }

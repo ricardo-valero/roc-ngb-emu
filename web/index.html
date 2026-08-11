@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>roc-canvas</title>
+<style>
+  html, body { margin: 0; height: 100%; display: grid; place-items: center; background: #111; }
+  canvas { width: 640px; height: 576px; image-rendering: pixelated; }
+  #status { color: #8f8; font: 12px monospace; position: fixed; top: 8px; left: 8px; }
+</style>
+</head>
+<body>
+<div id="status">loading…</div>
+<canvas id="screen" width="160" height="144"></canvas>
+<script type="module">
+const W = 160, H = 144;
+
+// --- Renderer seam (binjgb-style two-method interface) ---------------------
+
+class WebGPURenderer {
+  static async create(canvas) {
+    const adapter = await navigator.gpu?.requestAdapter();
+    if (!adapter) throw new Error('no WebGPU adapter');
+    const device = await adapter.requestDevice();
+    const context = canvas.getContext('webgpu');
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({ device, format, alphaMode: 'opaque' });
+
+    const texture = device.createTexture({
+      size: [W, H],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const sampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
+    const shader = device.createShaderModule({ code: `
+      struct VSOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
+      @vertex fn vs(@builtin(vertex_index) i: u32) -> VSOut {
+        let xy = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+        var out: VSOut;
+        out.pos = vec4f(xy * 2.0 - 1.0, 0.0, 1.0);
+        out.uv = vec2f(xy.x, 1.0 - xy.y);
+        return out;
+      }
+      @group(0) @binding(0) var samp: sampler;
+      @group(0) @binding(1) var tex: texture_2d<f32>;
+      @fragment fn fs(in: VSOut) -> @location(0) vec4f {
+        return textureSample(tex, samp, in.uv);
+      }`});
+    const pipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: shader, entryPoint: 'vs' },
+      fragment: { module: shader, entryPoint: 'fs', targets: [{ format }] },
+      primitive: { topology: 'triangle-list' },
+    });
+    const bindGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: sampler },
+        { binding: 1, resource: texture.createView() },
+      ],
+    });
+    return Object.assign(new WebGPURenderer(), { device, context, texture, pipeline, bindGroup });
+  }
+  uploadTexture(buffer) {
+    this.device.queue.writeTexture(
+      { texture: this.texture }, buffer,
+      { bytesPerRow: W * 4, rowsPerImage: H }, [W, H]);
+  }
+  renderTexture() {
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({ colorAttachments: [{
+      view: this.context.getCurrentTexture().createView(),
+      loadOp: 'clear', clearValue: { r: 0, g: 0, b: 0, a: 1 }, storeOp: 'store',
+    }]});
+    pass.setPipeline(this.pipeline);
+    pass.setBindGroup(0, this.bindGroup);
+    pass.draw(3);
+    pass.end();
+    this.device.queue.submit([encoder.finish()]);
+  }
+}
+
+class Canvas2DRenderer {
+  constructor(canvas) {
+    this.ctx = canvas.getContext('2d');
+    this.imageData = this.ctx.createImageData(W, H);
+  }
+  uploadTexture(buffer) { this.imageData.data.set(buffer); }
+  renderTexture() { this.ctx.putImageData(this.imageData, 0, 0); }
+}
+
+// --- Input: bit0..7 = Right,Left,Up,Down,A,B,Select,Start ------------------
+
+const KEYMAP = {
+  ArrowRight: 0, ArrowLeft: 1, ArrowUp: 2, ArrowDown: 3,
+  KeyX: 4, KeyZ: 5, Backspace: 6, Enter: 7,
+};
+let buttons = 0;
+addEventListener('keydown', (e) => { const b = KEYMAP[e.code]; if (b !== undefined) { buttons |= 1 << b; e.preventDefault(); } });
+addEventListener('keyup', (e) => { const b = KEYMAP[e.code]; if (b !== undefined) { buttons &= ~(1 << b); e.preventDefault(); } });
+
+// --- Wasm glue --------------------------------------------------------------
+
+async function main() {
+  const status = document.getElementById('status');
+  const canvas = document.getElementById('screen');
+
+  let renderer, backend;
+  try { renderer = await WebGPURenderer.create(canvas); backend = 'WebGPU'; }
+  catch { renderer = new Canvas2DRenderer(canvas); backend = 'Canvas2D (WebGPU unavailable)'; }
+
+  const module = await WebAssembly.compileStreaming(fetch('play.wasm'));
+  const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384 });
+  const decoder = new TextDecoder();
+  const env = {
+    memory,
+    js_log: (p, l) => console.log('[roc]', decoder.decode(new Uint8Array(memory.buffer, p, l))),
+  };
+  const instance = await WebAssembly.instantiate(module, { env });
+  instance.exports.init();
+  const fb = () => new Uint8Array(memory.buffer, instance.exports.framebuffer_ptr(), instance.exports.framebuffer_len());
+
+  let frames = 0, last = performance.now();
+  function tick() {
+    instance.exports.run_frame(buttons);
+    renderer.uploadTexture(fb());
+    renderer.renderTexture();
+    frames++;
+    const now = performance.now();
+    if (now - last >= 1000) {
+      status.textContent = `${backend} · ${frames} fps`;
+      frames = 0;
+      last = now;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+main().catch((e) => { document.getElementById('status').textContent = String(e); });
+</script>
+</body>
+</html>

@@ -3,3 +3,6 @@ spike/rocray-hello/main
 .direnv/
 /play
 /main
+golden/*.ppm
+golden/*.wav
+web/*.wasm
