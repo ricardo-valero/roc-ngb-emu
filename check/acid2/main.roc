@@ -7,24 +7,80 @@ import pf.OsStr
 import pf.Path
 import pf.Stdout
 import ngb.GameBoy
+import ngb.Sha256
 
-# Headless frame capture: run a ROM for N frames (default 300, ~5s of
-# emulated time) and write the final framebuffer as a P6 PPM image.
-# Usage: roc run check/acid2/main.roc -- <rom.gb> <out.ppm> [frames]
+# Headless frame capture, and the acid2 golden check.
+# Tool mode:  roc run check/acid2/main.roc -- <rom.gb> <out.ppm> [frames]
+#   run a ROM for N frames (default 300) and write the framebuffer as PPM.
+# Check mode: roc run check/acid2/main.roc -- --check <rom.gb>
+#   render 120 frames and compare the PPM digest against ./golden.sha256
+#   with compare-or-create semantics: a missing golden is written together
+#   with a reviewable golden.ppm and the run exits nonzero (a bless must be
+#   a deliberate act, never a CI pass); a mismatch keeps actual.ppm.
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {
+    match args {
+        [_, flag_arg, rom_arg] =>
+            if Path.from_os_str(flag_arg).display() == "--check" {
+                check!(Path.from_os_str(rom_arg))
+            } else {
+                dump!(args)
+            }
+
+        _ => dump!(args)
+    }
+}
+
+check! : Path => Try({}, _)
+check! = |rom_path| {
+    image = render(rom_path.read_bytes!()?, 120)
+    actual = Sha256.hex(image)
+    golden_path = Path.utf8("check/acid2/golden.sha256")
+    golden_bytes = golden_path.read_bytes!() ?? List.repeat(0x00.U8, 0)
+    if is_empty(golden_bytes) {
+        {
+            golden_path.write_bytes!("${actual}\n".to_utf8())?
+            Path.utf8("check/acid2/golden.ppm").write_bytes!(image)?
+            Stdout.line!("GOLDEN CREATED  check/acid2/golden.sha256")?
+            Stdout.line!("      review check/acid2/golden.ppm against the published reference, then commit the .sha256")?
+            Err(GoldenCreated)
+        }
+    } else {
+        {
+            expected = Str.from_utf8(golden_bytes) ?? ""
+            if expected.contains(actual) {
+                Stdout.line!("PASS  dmg-acid2 render matches the golden digest")?
+                Ok({})
+            } else {
+                Path.utf8("check/acid2/actual.ppm").write_bytes!(image)?
+                Stdout.line!("FAIL  dmg-acid2 digest mismatch")?
+                Stdout.line!("      expected: ${expected}")?
+                Stdout.line!("      actual:   ${actual}")?
+                Stdout.line!("      actual frame kept at check/acid2/actual.ppm")?
+                Err(DigestMismatch)
+            }
+        }
+    }
+}
+
+dump! : List(OsStr) => Try({}, _)
+dump! = |args| {
     parsed = parse_args(args)?
-    rom = parsed.rom_path.read_bytes!()?
+    parsed.out_path.write_bytes!(render(parsed.rom_path.read_bytes!()?, parsed.frames))?
+    Stdout.line!("wrote ${parsed.out_path.display()} after ${parsed.frames.to_str()} frames")?
+    Ok({})
+}
+
+render : List(U8), U64 -> List(U8)
+render = |rom, frames| {
     var gb = GameBoy.init(rom)
-    var i = parsed.frames
+    var i = frames
     while i > 0 {
         gb = gb.run_frame(GameBoy.no_buttons({}))
         i = i.minus(1)
     }
-    parsed.out_path.write_bytes!(ppm(gb.framebuffer()))?
-    Stdout.line!("wrote ${parsed.out_path.display()} after ${parsed.frames.to_str()} frames")?
-    Ok({})
+    ppm(gb.framebuffer())
 }
 
 ppm : List(U8) -> List(U8)
@@ -54,7 +110,7 @@ parse_args = |args|
         [_, rom_arg, out_arg, frames_arg, ..] =>
             Ok({ rom_path: Path.from_os_str(rom_arg), out_path: Path.from_os_str(out_arg), frames: parse_u64(frames_arg) })
 
-        _ => Err(FailedToReadArgs("usage: <rom.gb> <out.ppm> [frames]"))
+        _ => Err(FailedToReadArgs("usage: <rom.gb> <out.ppm> [frames] | --check <rom.gb>"))
     }
 
 parse_u64 : OsStr -> U64
@@ -65,3 +121,6 @@ parse_u64 = |os_str|
         } else {
             acc
         })
+
+is_empty : List(U8) -> Bool
+is_empty = |bytes| bytes.len() == 0

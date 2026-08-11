@@ -30,3 +30,9 @@ See proposal.md. Round one (superseded, visible in this branch's first commit) u
 ## Open Questions
 
 - None blocking.
+
+## Round four (user review): Nix-native ROMs, Roc-native checks
+
+- **One pinned source for retrio/gb-test-roms** (`check/gb-test-roms.nix`, `fetchFromGitHub` rev `c240dd7d` + hash) replaces every per-file URL+hash pair; slices list plain repo-relative paths. Mirrors the mooneye tarball pattern.
+- **Check logic lives in Roc, not bash.** `check/run.roc` (suite loop, passlist gating, promotion hints), `check/acid2/main.roc --check`, and `check/sound/main.roc` implement everything the shell scripts did; each `package.nix` is now just "fetch pinned ROMs, invoke the Roc program with store paths". Exit-3-on-bless became exit-1 (basic-cli maps Err to 1) — still nonzero, so CI still can't bless silently.
+- **`package/Sha256.roc`**: SHA-256 in pure Roc (FIPS vectors as expects) so golden digests stay byte-compatible with the sha256sum-era files — the untouched goldens passing is the end-to-end proof. Nightly quirks found on the way, worth remembering: type errors can defer to runtime as "dispatch on a value that can never exist" (the U64 shift-amount param is U8), and the flow analyzer emits spurious UNCONDITIONAL CONDITION warnings on `??`-with-effectful-call results.

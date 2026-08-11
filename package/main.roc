@@ -1,8 +1,9 @@
-package [Header, GameBoy, Harness] {}
+package [Header, GameBoy, Harness, Sha256] {}
 
 import Cartridge/Header
 import GameBoy
 import Harness
+import Sha256
 
 # Non-exposed modules, imported so `roc test package/main.roc` runs their expects
 import Bit

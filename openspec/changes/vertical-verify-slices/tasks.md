@@ -23,3 +23,9 @@
 ## 5. Verify no regression
 
 - [x] 5.1 All four checks pass with the same gating sets as before the split; `roc test package/main.roc` passes; both apps build
+
+## 6. Round four: Nix-native ROMs, Roc-native checks (user review)
+
+- [x] 6.1 `check/gb-test-roms.nix` pinned `fetchFromGitHub` shared by blargg + sound; per-file URL+hash lists deleted
+- [x] 6.2 `package/Sha256.roc` with FIPS-vector expects; goldens unchanged and passing under the Roc digest
+- [x] 6.3 Check logic rewritten in Roc (`check/run.roc` suite runner, acid2 `--check` mode, `check/sound/main.roc`); package.nix files reduced to ROM wiring
