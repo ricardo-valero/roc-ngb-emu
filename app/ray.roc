@@ -6,7 +6,7 @@
 # Esc exits.
 app [Model, program] {
     ray: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.9.0/3sKTYuHvxSV77dDyZrxuUYgfrAarL6ZtasWMPeH32udh.tar.zst",
-    ngb: "../../package/main.roc",
+    ngb: "../package/main.roc",
 }
 
 import ray.App
@@ -15,7 +15,7 @@ import ray.Color
 import ray.Draw
 import ray.Host
 import ngb.GameBoy
-import "../../rom/play.gb" as rom : List(U8)
+import "../rom/play.gb" as rom : List(U8)
 
 # GameBoy is boxed: passing the large nested record itself through the
 # host's model round-trip crashes in the platform's refcount walk

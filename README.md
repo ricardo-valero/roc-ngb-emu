@@ -14,16 +14,17 @@ WebGPU on the [roc-web](https://github.com/ricardo-valero/roc-web) platform
 via Web Audio; roc-ray needs a PCM-streaming API), battery saves, MBC3 RTC.
 
 The repo splits into `package/` (the emulator core, pure Roc),
-`app/` (the two frontends: `ray/` native window, `web/` browser), and
-`example/` (headless dev tools that exercise the core).
+`app/` (the two frontends: `ray.roc` native window, `web/` browser),
+`check/` (vertical check slices — each owns its runner, hash-pinned ROM
+list, passlist/golden, and packaging), and `example/` (headless dev tools
+that exercise the core).
 
-Play a ROM — the apps embed `rom/play.gb` at **build time**, so swap the
-file first, then rebuild (all inside `nix develop`):
+Play a ROM — the apps embed `rom/play.gb` at **build time**, so put the
+file there first, then build (all inside `nix develop`):
 
 ```bash
-nix run .#fetch-roms                     # first time: seeds rom/play.gb with dmg-acid2
 cp your-game.gb rom/play.gb              # any 32 KiB / MBC1 / MBC3 ROM
-roc build app/ray/main.roc --output=ray && ./ray
+roc build app/ray.roc --output=ray && ./ray
 ```
 
 Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select,
@@ -48,31 +49,33 @@ nightly it was built against — bump the platform URL and the flake pin
 together. Full spike evidence and benchmarks:
 `openspec/changes/wasm-platform-spike/report.md`.
 
-## Verification
+## Checks
 
-Run the suites (test ROMs are fetched on first run):
+Each check is a vertical slice under `check/<name>/`: its runner, its
+ROM list (fetched by Nix with pinned hashes — no shared ROM folder), and
+its passlist or golden, wired up in `flake.nix`:
 
 ```bash
-nix run .#run-blargg          # CPU: Blargg cpu_instrs, 12 ROMs
+nix run .#check-blargg        # Blargg suites: cpu_instrs, timing, dmg_sound
+nix run .#check-mooneye       # timing/halt: mooneye acceptance subset
 nix run .#check-acid2         # PPU: dmg-acid2 vs golden digest
-nix run .#check-sound         # APU: dmg_sound 01-registers + golden WAV digest
-nix run .#run-ladder          # accuracy ladder: Blargg timing + mooneye halt/timer
+nix run .#check-sound         # APU: golden WAV digest of 01-registers
 ```
 
-Golden checks use compare-or-create: digests live in `golden/`; blessing a
-new golden = delete the `.sha256` and re-run (writes a reviewable image/WAV
-alongside, exits 3 so CI can never bless silently). The ladder gates the
-ROMs listed in `golden/ladder.passlist` and reports the rest informatively —
-promote a ROM by adding its name once it passes.
+ROM suites gate on the slice's `passlist` (listed ROMs must pass — the set
+never shrinks; the rest report informatively — promote a ROM by adding its
+name once it passes). Golden digests use compare-or-create: blessing =
+delete the slice's `golden.sha256` and re-run (writes a reviewable
+image/WAV next to it, exits 3 so CI can never bless silently).
 
-Dump any ROM's screen or debug views (background map, tiles, OAM) to images,
-or inspect a cartridge header:
+Dump any ROM's screen, debug views (background map, tiles, OAM), or audio
+to files, or inspect a cartridge header:
 
 ```bash
-roc run example/frame.roc -- rom/dmg-acid2.gb out.ppm 120
-roc run example/debug.roc -- rom/dmg-acid2.gb out-dir 120
-roc run example/wav.roc -- rom/dmg_sound/01-registers.gb out.wav 180
-roc run example/cartridge.roc -- <rom-path>.gb
+roc run check/acid2/main.roc -- <rom>.gb out.ppm 120
+roc run example/debug.roc -- <rom>.gb out-dir 120
+roc run check/sound/main.roc -- <rom>.gb out.wav 180
+roc run example/cartridge.roc -- <rom>.gb
 ```
 
 Develop:

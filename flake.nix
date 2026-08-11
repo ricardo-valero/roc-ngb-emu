@@ -15,36 +15,21 @@
     packages = nixpkgs.lib.genAttrs systems (system: let
       pkgs = nixpkgs.legacyPackages.${system};
       roc-pkgs = roc-overlay.packages.${system};
-      self-pkgs = self.packages.${system};
+      roc = roc-pkgs.nightly;
     in {
-      fetch-roms = pkgs.callPackage ./nix/fetch-roms.nix {};
-      run-blargg = pkgs.callPackage ./nix/run-blargg.nix {
-        inherit (self-pkgs) fetch-roms;
-        roc = roc-pkgs.nightly;
-      };
-      check-acid2 = pkgs.callPackage ./nix/check-acid2.nix {
-        inherit (self-pkgs) fetch-roms;
-        roc = roc-pkgs.nightly;
-      };
-      check-sound = pkgs.callPackage ./nix/check-sound.nix {
-        inherit (self-pkgs) fetch-roms;
-        roc = roc-pkgs.nightly;
-      };
-      run-ladder = pkgs.callPackage ./nix/run-ladder.nix {
-        inherit (self-pkgs) fetch-roms;
-        roc = roc-pkgs.nightly;
-      };
+      check-blargg = pkgs.callPackage ./check/blargg/package.nix {inherit roc;};
+      check-mooneye = pkgs.callPackage ./check/mooneye/package.nix {inherit roc;};
+      check-acid2 = pkgs.callPackage ./check/acid2/package.nix {inherit roc;};
+      check-sound = pkgs.callPackage ./check/sound/package.nix {inherit roc;};
     });
     devShells = nixpkgs.lib.genAttrs systems (system: let
       pkgs = nixpkgs.legacyPackages.${system};
       roc-pkgs = roc-overlay.packages.${system};
-      self-pkgs = self.packages.${system};
     in {
       default = pkgs.mkShell {
         buildInputs = builtins.attrValues {
           inherit (pkgs) nixd alejandra python3;
           inherit (roc-pkgs) nightly;
-          inherit (self-pkgs) fetch-roms run-blargg check-acid2 check-sound run-ladder;
         };
       };
     });

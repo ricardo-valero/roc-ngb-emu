@@ -3,6 +3,7 @@ spike/rocray-hello/main
 .direnv/
 /ray
 /main
-golden/*.ppm
-golden/*.wav
+check/*/*.ppm
+check/*/*.wav
 app/web/*.wasm
+.claude/settings.local.json

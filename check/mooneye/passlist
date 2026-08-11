@@ -1,4 +1,3 @@
-instr_timing.gb
 halt_ime0_ei.gb
 halt_ime0_nointr_timing.gb
 halt_ime1_timing.gb
