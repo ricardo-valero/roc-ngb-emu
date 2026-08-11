@@ -16,8 +16,8 @@ writeShellApplication {
   text = ''
     passlist="golden/ladder.passlist"
 
-    if [ ! -f example/blargg.roc ]; then
-      echo "run-ladder: run from the repo root (example/blargg.roc not found)" >&2
+    if [ ! -f verify/blargg/main.roc ]; then
+      echo "run-ladder: run from the repo root (verify/blargg/main.roc not found)" >&2
       exit 2
     fi
 
@@ -28,7 +28,7 @@ writeShellApplication {
     promote=()
     while IFS= read -r romfile; do
       name="$(basename "$romfile")"
-      if roc run example/blargg.roc -- "$romfile" >/dev/null 2>&1; then
+      if roc run verify/blargg/main.roc -- "$romfile" >/dev/null 2>&1; then
         result=pass
       else
         result=fail

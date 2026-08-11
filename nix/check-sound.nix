@@ -29,7 +29,7 @@ writeShellApplication {
     mkdir -p golden
 
     echo "== conformance gate: 01-registers"
-    roc run example/blargg.roc -- "rom/dmg_sound/01-registers.gb" >/dev/null
+    roc run verify/blargg/main.roc -- "rom/dmg_sound/01-registers.gb" >/dev/null
     echo "PASS  01-registers"
 
     echo "== golden WAV digest"
@@ -65,7 +65,7 @@ writeShellApplication {
     for rom in rom/dmg_sound/*.gb; do
       name="$(basename "$rom")"
       if [ "$name" = "01-registers.gb" ]; then continue; fi
-      if roc run example/blargg.roc -- "$rom" >/dev/null 2>&1; then
+      if roc run verify/blargg/main.roc -- "$rom" >/dev/null 2>&1; then
         echo "pass  $name"
       else
         echo "fail  $name"

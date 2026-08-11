@@ -14,16 +14,17 @@ WebGPU on the [roc-web](https://github.com/ricardo-valero/roc-web) platform
 via Web Audio; roc-ray needs a PCM-streaming API), battery saves, MBC3 RTC.
 
 The repo splits into `package/` (the emulator core, pure Roc),
-`app/` (the two frontends: `ray/` native window, `web/` browser), and
-`example/` (headless dev tools that exercise the core).
+`app/` (the two frontends: `ray.roc` native window, `web/` browser),
+`verify/` (vertical check slices — each owns its runner, ROM list, and
+packaging), and `example/` (headless dev tools that exercise the core).
 
-Play a ROM — the apps embed `rom/play.gb` at **build time**, so swap the
-file first, then rebuild (all inside `nix develop`):
+Play a ROM — the apps embed `rom/play.gb` at **build time**, so put the
+file there first, then build (all inside `nix develop`):
 
 ```bash
-nix run .#fetch-roms                     # first time: seeds rom/play.gb with dmg-acid2
 cp your-game.gb rom/play.gb              # any 32 KiB / MBC1 / MBC3 ROM
-roc build app/ray/main.roc --output=ray && ./ray
+# no game handy? nix run .#fetch-roms && cp rom/dmg-acid2.gb rom/play.gb
+roc build app/ray.roc --output=ray && ./ray
 ```
 
 Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select,
@@ -53,7 +54,7 @@ together. Full spike evidence and benchmarks:
 Run the suites (test ROMs are fetched on first run):
 
 ```bash
-nix run .#run-blargg          # CPU: Blargg cpu_instrs, 12 ROMs
+nix run .#verify-blargg       # CPU: Blargg cpu_instrs, 12 ROMs (verify/blargg slice)
 nix run .#check-acid2         # PPU: dmg-acid2 vs golden digest
 nix run .#check-sound         # APU: dmg_sound 01-registers + golden WAV digest
 nix run .#run-ladder          # accuracy ladder: Blargg timing + mooneye halt/timer
