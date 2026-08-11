@@ -55,6 +55,7 @@ async function run(wasmUrl, opts, status, canvas) {
   };
   const instance = await WebAssembly.instantiate(module, { env });
   const x = instance.exports;
+  window.__rocweb = { memory, exports: x }; // debug handle
 
   // App config -> page
   x.configure();

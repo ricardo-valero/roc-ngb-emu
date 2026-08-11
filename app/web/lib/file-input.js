@@ -5,14 +5,20 @@ export function attachFileInput(onBytes) {
     type: 'file',
     className: 'roc-web-file',
   }));
-  pick.addEventListener('change', async () => {
-    if (pick.files[0]) onBytes(new Uint8Array(await pick.files[0].arrayBuffer()));
+  const load = async (file) => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    console.log(`[roc-web] loading "${file.name}" (${bytes.length} bytes)`);
+    onBytes(bytes);
+  };
+
+  pick.addEventListener('change', () => {
+    if (pick.files[0]) load(pick.files[0]);
   });
 
   window.addEventListener('dragover', (e) => e.preventDefault());
-  window.addEventListener('drop', async (e) => {
+  window.addEventListener('drop', (e) => {
     e.preventDefault();
     const file = e.dataTransfer?.files?.[0];
-    if (file) onBytes(new Uint8Array(await file.arrayBuffer()));
+    if (file) load(file);
   });
 }
