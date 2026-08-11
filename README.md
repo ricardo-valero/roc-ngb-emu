@@ -10,8 +10,9 @@ verified by Blargg's `dmg_sound` register test and a frozen WAV digest.
 A [roc-ray](https://github.com/lukewilliamboswell/roc-ray) app plays ROMs in
 a window with keyboard input, and the same core runs **in the browser** via
 WebGPU on the [roc-web](https://github.com/ricardo-valero/roc-web) platform
-(see below) — pixel-identical to native, 90+ fps. Not yet: speaker output (the browser path unblocks this
-via Web Audio; roc-ray needs a PCM-streaming API), battery saves, MBC3 RTC.
+(see below) — pixel-identical to native, 90+ fps, **with sound** and
+runtime ROM loading (drop a `.gb` on the page). Not yet: speaker output in
+the native app (roc-ray needs a PCM-streaming API), battery saves, MBC3 RTC.
 
 The repo splits into `package/` (the emulator core, pure Roc),
 `app/` (the two frontends: `ray.roc` native window, `web/` browser),
@@ -19,8 +20,9 @@ The repo splits into `package/` (the emulator core, pure Roc),
 list, passlist/golden, and packaging), and `example/` (headless dev tools
 that exercise the core).
 
-Play a ROM — the apps embed `rom/play.gb` at **build time**, so put the
-file there first, then build (all inside `nix develop`):
+Play a ROM in a native window — the ray app embeds `rom/play.gb` at
+**build time**, so put the file there first, then build (all inside
+`nix develop`):
 
 ```bash
 cp your-game.gb rom/play.gb              # any 32 KiB / MBC1 / MBC3 ROM
@@ -32,22 +34,29 @@ Esc quits.
 
 ## Play in the browser (roc-web)
 
-The browser app lives in `app/web/` (`main.roc` + `index.html`), built on
-[roc-web](https://github.com/ricardo-valero/roc-web) — a wasm32 Roc
-platform (Zig host + WebGPU renderer) referenced by release-bundle URL,
-just like roc-ray. Inside `nix develop`:
+The browser app lives in `app/web/` — `main.roc` (a near-twin of
+`app/ray.roc`: same config-and-`render!` shape, same `host.key_down`
+buttons), a few-line `index.html`, and the vendored `lib/` from
+[roc-web](https://github.com/ricardo-valero/roc-web), the wasm32 Roc
+platform referenced by release-bundle URL just like roc-ray. ROMs load at
+**runtime**: the page fetches `play.gb` by default, and dropping any `.gb`
+onto the page (or the picker) swaps games without a rebuild. Sound works
+(48 kHz APU output via an AudioWorklet — press a key to unmute, a browser
+autoplay rule). Inside `nix develop`:
 
 ```bash
-roc build app/web/main.roc --output=app/web/play.wasm   # embeds rom/play.gb
+roc build app/web/main.roc --output=app/web/play.wasm
+cp rom/play.gb app/web/                                 # default ROM the page fetches
 python3 -m http.server 8642 --directory app/web         # open http://localhost:8642/
 ```
 
-Same controls as the windowed app (no Esc — it's a browser tab). The page
-picks WebGPU and falls back to Canvas2D; the status line shows which.
-Version discipline mirrors roc-ray: a roc-web release pairs with the Roc
-nightly it was built against — bump the platform URL and the flake pin
-together. Full spike evidence and benchmarks:
-`openspec/changes/wasm-platform-spike/report.md`.
+Same controls as the windowed app (no Esc — it's a browser tab). The app
+config picks the renderer (`Auto` = WebGPU → WebGL → Canvas2D); the status
+line shows the backend, fps, and audio buffer health. Version discipline
+mirrors roc-ray: a roc-web release (bundle + `lib/`) pairs with the Roc
+nightly it was built against — bump the platform URL, the vendored lib,
+and the flake pin together. Spike evidence and benchmarks:
+`openspec/changes/archive/2026-08-10-wasm-platform-spike/report.md`.
 
 ## Checks
 

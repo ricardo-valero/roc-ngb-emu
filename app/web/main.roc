@@ -1,36 +1,46 @@
-# Play a Game Boy ROM in the browser on the roc-web platform (WebGPU).
-# Like play.roc, the ROM at rom/play.gb is embedded at build time.
-# Build: roc build app/web/main.roc --output=app/web/play.wasm
-# Buttons arrive as a packed u32: bit0..7 = Right,Left,Up,Down,A,B,Select,Start.
-app [Model, main] {
-    web: platform "https://github.com/ricardo-valero/roc-web/releases/download/v0.1.0/ExwxkBUq3qJZSaV4KgXdTw6ePf5FCbYJU3wEoYmvJgrx.tar.zst",
+# Play a Game Boy ROM in the browser on the roc-web platform.
+# ROMs load at runtime: the page fetches play.gb by default; drop any .gb
+# file onto the page (or use the picker) to swap games — no rebuild.
+# Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select.
+app [Model, program] {
+    web: platform "https://github.com/ricardo-valero/roc-web/releases/download/v0.2.0/8P65Tbg3xjD6MpJx33quQKJES9SkV9aRGRn59juib6sz.tar.zst",
     ngb: "../../package/main.roc",
 }
 
+import web.App
 import web.Host
 import ngb.GameBoy
-import "../../rom/play.gb" as rom : List(U8)
 
 Model : Box(GameBoy)
 
-main = { init!, frame! }
+program = { init, render! }
 
-init! : () => Model
-init! = || {
-    Host.log!("roc-ngb-emu web: init (${rom.len().to_str()} byte ROM)")
-    Box.box(GameBoy.init(rom))
-}
+init = App.init(
+    App.default
+        .with_title("roc-ngb-emu")
+        .with_screen({ width: 160, height: 144 })
+        .with_scale(4)
+        .with_renderer(Auto),
+    |rom| Box.box(GameBoy.init(rom)),
+)
 
-frame! : Model, U32 => Model
-frame! = |boxed, bits| {
-    gb = Box.unbox(boxed).run_frame(decode_buttons(bits))
-    Host.blit!(rgba(gb.framebuffer()), 160, 144)
-    Box.box(gb)
-}
-
-decode_buttons = |bits| {
-    b = |n| bits.shr_zf_wrap(n).bitwise_and(1.U32) == 1.U32
-    { right: b(0), left: b(1), up: b(2), down: b(3), a: b(4), b: b(5), select: b(6), start: b(7) }
+render! : Model, Host => Model
+render! = |model, host| {
+    buttons = {
+        up: host.key_down(KeyUp),
+        down: host.key_down(KeyDown),
+        left: host.key_down(KeyLeft),
+        right: host.key_down(KeyRight),
+        a: host.key_down(KeyX),
+        b: host.key_down(KeyZ),
+        start: host.key_down(KeyEnter),
+        select: host.key_down(KeyBackspace),
+    }
+    ran = Box.unbox(model).run_frame(buttons)
+    drained = ran.take_samples()
+    host.blit!(rgba(drained.gb.framebuffer()))
+    host.queue_audio!(drained.samples)
+    Box.box(drained.gb)
 }
 
 # DMG shades (0..3) to RGBA8 grayscale
