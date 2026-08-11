@@ -74,7 +74,7 @@ to files, or inspect a cartridge header:
 ```bash
 roc run check/acid2/main.roc -- <rom>.gb out.ppm 120
 roc run example/debug.roc -- <rom>.gb out-dir 120
-roc run check/sound/wav.roc -- <rom>.gb out.wav 180
+roc run check/sound/main.roc -- <rom>.gb out.wav 180
 roc run example/cartridge.roc -- <rom>.gb
 ```
 

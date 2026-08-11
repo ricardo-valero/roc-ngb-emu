@@ -12,6 +12,6 @@ in
     name = "check-sound";
     runtimeInputs = [roc];
     text = ''
-      roc run check/sound/main.roc -- "${gb-test-roms}/dmg_sound/rom_singles/01-registers.gb"
+      roc run check/sound/main.roc -- --check "${gb-test-roms}/dmg_sound/rom_singles/01-registers.gb"
     '';
   }

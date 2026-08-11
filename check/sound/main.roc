@@ -9,19 +9,28 @@ import pf.Stdout
 import ngb.GameBoy
 import ngb.Sha256
 
-# APU audio regression: render 180 frames of the given ROM (01-registers)
-# as a WAV and compare its digest against ./golden.sha256 with
-# compare-or-create semantics — a missing golden is written along with a
-# listenable golden.wav and the run exits nonzero (a bless must be a
-# deliberate act, never a CI pass); a mismatch keeps actual.wav.
-# The dmg_sound conformance suite lives in check/blargg.
-# Usage: roc run check/sound/main.roc -- <rom.gb>
+# Headless audio capture, and the APU golden check.
+# Tool mode:  roc run check/sound/main.roc -- <rom.gb> <out.wav> [frames]
+#   run a ROM for N frames (default 300) and write the APU 48 kHz stereo
+#   output as a 16-bit PCM WAV.
+# Check mode: roc run check/sound/main.roc -- --check <rom.gb>
+#   render 180 frames (01-registers) and compare the WAV digest against
+#   ./golden.sha256 with compare-or-create semantics — a missing golden is
+#   written along with a listenable golden.wav and the run exits nonzero
+#   (a bless must be a deliberate act, never a CI pass); a mismatch keeps
+#   actual.wav. The dmg_sound conformance suite lives in check/blargg.
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {
     match args {
-        [_, rom_arg, ..] => check!(Path.from_os_str(rom_arg))
-        _ => Err(FailedToReadArgs("usage: <rom.gb>"))
+        [_, flag_arg, rom_arg] =>
+            if Path.from_os_str(flag_arg).display() == "--check" {
+                check!(Path.from_os_str(rom_arg))
+            } else {
+                dump!(args)
+            }
+
+        _ => dump!(args)
     }
 }
 
@@ -51,6 +60,14 @@ check! = |rom_path| {
             Err(DigestMismatch)
         }
     }
+}
+
+dump! : List(OsStr) => Try({}, _)
+dump! = |args| {
+    parsed = parse_args(args)?
+    parsed.out_path.write_bytes!(render_wav(parsed.rom_path.read_bytes!()?, parsed.frames))?
+    Stdout.line!("wrote ${parsed.out_path.display()} (${parsed.frames.to_str()} frames)")?
+    Ok({})
 }
 
 render_wav : List(U8), U64 -> List(U8)
@@ -109,3 +126,24 @@ wav_header = |data_len|
 
 is_empty : List(U8) -> Bool
 is_empty = |bytes| bytes.len() == 0
+
+parse_args : List(OsStr) -> Try({ rom_path : Path, out_path : Path, frames : U64 }, [FailedToReadArgs(Str), ..])
+parse_args = |args|
+    match args {
+        [_, rom_arg, out_arg] =>
+            Ok({ rom_path: Path.from_os_str(rom_arg), out_path: Path.from_os_str(out_arg), frames: 300 })
+
+        [_, rom_arg, out_arg, frames_arg, ..] =>
+            Ok({ rom_path: Path.from_os_str(rom_arg), out_path: Path.from_os_str(out_arg), frames: parse_u64(frames_arg) })
+
+        _ => Err(FailedToReadArgs("usage: <rom.gb> <out.wav> [frames] | --check <rom.gb>"))
+    }
+
+parse_u64 : OsStr -> U64
+parse_u64 = |os_str|
+    Path.from_os_str(os_str).display().to_utf8().fold(0, |acc, byte|
+        if byte >= 48 and byte <= 57 {
+            acc * 10 + U8.minus(byte, 48).to_u64()
+        } else {
+            acc
+        })
