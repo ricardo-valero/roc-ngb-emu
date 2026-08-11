@@ -15,7 +15,7 @@ via Web Audio; roc-ray needs a PCM-streaming API), battery saves, MBC3 RTC.
 
 The repo splits into `package/` (the emulator core, pure Roc),
 `app/` (the two frontends: `ray.roc` native window, `web/` browser),
-`checks/` (vertical check slices — each owns its runner, hash-pinned ROM
+`check/` (vertical check slices — each owns its runner, hash-pinned ROM
 list, passlist/golden, and packaging), and `example/` (headless dev tools
 that exercise the core).
 
@@ -51,7 +51,7 @@ together. Full spike evidence and benchmarks:
 
 ## Checks
 
-Each check is a vertical slice under `checks/<name>/`: its runner, its
+Each check is a vertical slice under `check/<name>/`: its runner, its
 ROM list (fetched by Nix with pinned hashes — no shared ROM folder), and
 its passlist or golden, wired up in `flake.nix`:
 
@@ -72,9 +72,9 @@ Dump any ROM's screen, debug views (background map, tiles, OAM), or audio
 to files, or inspect a cartridge header:
 
 ```bash
-roc run checks/acid2/main.roc -- <rom>.gb out.ppm 120
+roc run check/acid2/main.roc -- <rom>.gb out.ppm 120
 roc run example/debug.roc -- <rom>.gb out-dir 120
-roc run checks/sound/wav.roc -- <rom>.gb out.wav 180
+roc run check/sound/wav.roc -- <rom>.gb out.wav 180
 roc run example/cartridge.roc -- <rom>.gb
 ```
 

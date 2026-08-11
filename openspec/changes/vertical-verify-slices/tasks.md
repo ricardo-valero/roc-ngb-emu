@@ -10,14 +10,14 @@
 
 ## 3. Slices (fetchurl + passlist pattern)
 
-- [x] 3.1 Prefetch hashes; `checks/blargg/{main.roc,roms.nix,passlist,package.nix}` — cpu_instrs + Blargg timing ROMs; 13 gate, mem_timing* informative
-- [x] 3.2 `checks/mooneye/{main.roc,package.nix,passlist}` — tarball fetchurl + extraction derivation; 6 gate
-- [x] 3.3 `checks/acid2/{main.roc,package.nix,golden.sha256}` — frame dumper moved from `example/frame.roc`; digest flow unchanged
-- [x] 3.4 `checks/sound/{main.roc,wav.roc,package.nix,passlist,golden.sha256}` — verdict runner + WAV renderer moved from `example/wav.roc`; 01-registers gates, singles informative, WAV digest unchanged
+- [x] 3.1 Prefetch hashes; `check/blargg/{main.roc,roms.nix,passlist,package.nix}` — cpu_instrs + Blargg timing ROMs; 13 gate, mem_timing* informative
+- [x] 3.2 `check/mooneye/{main.roc,package.nix,passlist}` — tarball fetchurl + extraction derivation; 6 gate
+- [x] 3.3 `check/acid2/{main.roc,package.nix,golden.sha256}` — frame dumper moved from `example/frame.roc`; digest flow unchanged
+- [x] 3.4 `check/sound/{main.roc,wav.roc,package.nix,passlist,golden.sha256}` — verdict runner + WAV renderer moved from `example/wav.roc`; 01-registers gates, singles informative, WAV digest unchanged
 
 ## 4. Flake, deletions, docs
 
-- [x] 4.1 `flake.nix`: discovery over `checks/` → `packages.check-<name>`; `dmg-acid2-rom` package; devshell drops all checks; delete `nix/{run-ladder,check-acid2,check-sound,fetch-roms,lib}.nix`, `golden/`, `verify/`
+- [x] 4.1 `flake.nix`: discovery over `check/` → `packages.check-<name>`; `dmg-acid2-rom` package; devshell drops all checks; delete `nix/{run-ladder,check-acid2,check-sound,fetch-roms,lib}.nix`, `golden/`, `verify/`
 - [x] 4.2 README: verification section (four `check-*` commands, passlist/bless docs), tool paths, `rom/play.gb` zero-ROM path via `dmg-acid2-rom`
 
 ## 5. Verify no regression

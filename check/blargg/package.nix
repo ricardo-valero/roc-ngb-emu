@@ -41,7 +41,7 @@ in
     name = "check-blargg";
     runtimeInputs = [coreutils roc];
     text = ''
-      if [ ! -f checks/run.roc ]; then
+      if [ ! -f check/run.roc ]; then
         echo "check-blargg: run from the repo root" >&2
         exit 2
       fi
@@ -49,12 +49,12 @@ in
       gate_fail=0
       promote=()
       while IFS="|" read -r name path; do
-        if out="$(roc run checks/run.roc -- "$path" 2>&1)"; then
+        if out="$(roc run check/run.roc -- "$path" 2>&1)"; then
           result=pass
         else
           result=fail
         fi
-        if grep -qxF "$name" checks/blargg/passlist; then
+        if grep -qxF "$name" check/blargg/passlist; then
           if [ "$result" = pass ]; then
             echo "PASS  $name"
           else
@@ -72,13 +72,13 @@ in
 
       echo "----"
       if [ "''${#promote[@]}" -gt 0 ]; then
-        echo "promotable (add to checks/blargg/passlist):"
+        echo "promotable (add to check/blargg/passlist):"
         printf "  %s\n" "''${promote[@]}"
       fi
       if [ "$gate_fail" -ne 0 ]; then
         echo "FAILED: $gate_fail gating ROM(s) regressed"
         exit 1
       fi
-      echo "ok ($(grep -c . checks/blargg/passlist) gating)"
+      echo "ok ($(grep -c . check/blargg/passlist) gating)"
     '';
   }

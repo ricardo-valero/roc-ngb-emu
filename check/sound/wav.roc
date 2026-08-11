@@ -10,7 +10,7 @@ import ngb.GameBoy
 
 # Headless audio capture: run a ROM for N frames (default 300) and write the
 # APU's 48 kHz stereo output as a 16-bit PCM WAV.
-# Usage: roc run checks/sound/wav.roc -- <rom.gb> <out.wav> [frames]
+# Usage: roc run check/sound/wav.roc -- <rom.gb> <out.wav> [frames]
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {

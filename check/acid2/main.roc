@@ -10,7 +10,7 @@ import ngb.GameBoy
 
 # Headless frame capture: run a ROM for N frames (default 300, ~5s of
 # emulated time) and write the final framebuffer as a P6 PPM image.
-# Usage: roc run checks/acid2/main.roc -- <rom.gb> <out.ppm> [frames]
+# Usage: roc run check/acid2/main.roc -- <rom.gb> <out.ppm> [frames]
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {

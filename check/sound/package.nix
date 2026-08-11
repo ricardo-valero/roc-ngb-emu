@@ -38,7 +38,7 @@ in
     name = "check-sound";
     runtimeInputs = [coreutils roc];
     text = ''
-      if [ ! -f checks/run.roc ]; then
+      if [ ! -f check/run.roc ]; then
         echo "check-sound: run from the repo root" >&2
         exit 2
       fi
@@ -47,12 +47,12 @@ in
       gate_fail=0
       promote=()
       while IFS="|" read -r name path; do
-        if out="$(roc run checks/run.roc -- "$path" 2>&1)"; then
+        if out="$(roc run check/run.roc -- "$path" 2>&1)"; then
           result=pass
         else
           result=fail
         fi
-        if grep -qxF "$name" checks/sound/passlist; then
+        if grep -qxF "$name" check/sound/passlist; then
           if [ "$result" = pass ]; then
             echo "PASS  $name"
           else
@@ -68,22 +68,22 @@ in
       ${romlist}
       ROMS
       if [ "''${#promote[@]}" -gt 0 ]; then
-        echo "promotable (add to checks/sound/passlist):"
+        echo "promotable (add to check/sound/passlist):"
         printf "  %s\n" "''${promote[@]}"
       fi
 
       echo "== golden WAV digest"
-      golden="checks/sound/golden.sha256"
+      golden="check/sound/golden.sha256"
       out="$(mktemp -t sndXXXX).wav"
-      roc run checks/sound/wav.roc -- ${registers_rom} "$out" 180 >/dev/null
+      roc run check/sound/wav.roc -- ${registers_rom} "$out" 180 >/dev/null
       actual="$(sha256sum "$out" | cut -d" " -f1)"
 
       if [ ! -f "$golden" ]; then
         echo "$actual" > "$golden"
-        cp "$out" checks/sound/golden.wav
+        cp "$out" check/sound/golden.wav
         rm -f "$out"
         echo "GOLDEN CREATED  $golden"
-        echo "      listen to checks/sound/golden.wav before committing the .sha256"
+        echo "      listen to check/sound/golden.wav before committing the .sha256"
         echo "      (exit 3: a bless must be a deliberate dev-shell act, never a CI pass)"
         exit 3
       fi
@@ -93,12 +93,12 @@ in
         echo "PASS  WAV matches the golden digest"
         rm -f "$out"
       else
-        cp "$out" checks/sound/actual.wav
+        cp "$out" check/sound/actual.wav
         rm -f "$out"
         echo "FAIL  WAV digest mismatch"
         echo "      expected: $expected"
         echo "      actual:   $actual"
-        echo "      actual WAV kept at checks/sound/actual.wav for listening"
+        echo "      actual WAV kept at check/sound/actual.wav for listening"
         exit 1
       fi
 
@@ -107,6 +107,6 @@ in
         echo "FAILED: $gate_fail gating ROM(s) regressed"
         exit 1
       fi
-      echo "ok ($(grep -c . checks/sound/passlist) gating)"
+      echo "ok ($(grep -c . check/sound/passlist) gating)"
     '';
   }

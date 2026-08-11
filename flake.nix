@@ -17,10 +17,10 @@
       roc-pkgs = roc-overlay.packages.${system};
       roc = roc-pkgs.nightly;
     in {
-      check-blargg = pkgs.callPackage ./checks/blargg/package.nix {inherit roc;};
-      check-mooneye = pkgs.callPackage ./checks/mooneye/package.nix {inherit roc;};
-      check-acid2 = pkgs.callPackage ./checks/acid2/package.nix {inherit roc;};
-      check-sound = pkgs.callPackage ./checks/sound/package.nix {inherit roc;};
+      check-blargg = pkgs.callPackage ./check/blargg/package.nix {inherit roc;};
+      check-mooneye = pkgs.callPackage ./check/mooneye/package.nix {inherit roc;};
+      check-acid2 = pkgs.callPackage ./check/acid2/package.nix {inherit roc;};
+      check-sound = pkgs.callPackage ./check/sound/package.nix {inherit roc;};
     });
     devShells = nixpkgs.lib.genAttrs systems (system: let
       pkgs = nixpkgs.legacyPackages.${system};

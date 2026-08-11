@@ -27,7 +27,7 @@ in
     name = "check-mooneye";
     runtimeInputs = [coreutils roc];
     text = ''
-      if [ ! -f checks/run.roc ]; then
+      if [ ! -f check/run.roc ]; then
         echo "check-mooneye: run from the repo root" >&2
         exit 2
       fi
@@ -36,12 +36,12 @@ in
       promote=()
       for path in ${roms}/*.gb; do
         name="$(basename "$path")"
-        if out="$(roc run checks/run.roc -- "$path" 2>&1)"; then
+        if out="$(roc run check/run.roc -- "$path" 2>&1)"; then
           result=pass
         else
           result=fail
         fi
-        if grep -qxF "$name" checks/mooneye/passlist; then
+        if grep -qxF "$name" check/mooneye/passlist; then
           if [ "$result" = pass ]; then
             echo "PASS  $name"
           else
@@ -57,13 +57,13 @@ in
 
       echo "----"
       if [ "''${#promote[@]}" -gt 0 ]; then
-        echo "promotable (add to checks/mooneye/passlist):"
+        echo "promotable (add to check/mooneye/passlist):"
         printf "  %s\n" "''${promote[@]}"
       fi
       if [ "$gate_fail" -ne 0 ]; then
         echo "FAILED: $gate_fail gating ROM(s) regressed"
         exit 1
       fi
-      echo "ok ($(grep -c . checks/mooneye/passlist) gating)"
+      echo "ok ($(grep -c . check/mooneye/passlist) gating)"
     '';
   }
