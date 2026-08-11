@@ -9,8 +9,8 @@ cartridges work, and the four-channel APU synthesizes audio at 48 kHz —
 verified by Blargg's `dmg_sound` register test and a frozen WAV digest.
 A [roc-ray](https://github.com/lukewilliamboswell/roc-ray) app plays ROMs in
 a window with keyboard input, and the same core runs **in the browser** via
-WebGPU through the sibling `roc-canvas` platform (see below) — pixel-identical
-to native, 90+ fps. Not yet: speaker output (the browser path unblocks this
+WebGPU on the [roc-web](https://github.com/ricardo-valero/roc-web) platform
+(see below) — pixel-identical to native, 90+ fps. Not yet: speaker output (the browser path unblocks this
 via Web Audio; roc-ray needs a PCM-streaming API), battery saves, MBC3 RTC.
 
 Play a ROM — the app embeds `rom/play.gb` at **build time**, so swap the
@@ -25,26 +25,12 @@ roc build example/play.roc && ./play
 Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select,
 Esc quits.
 
-## Play in the browser (roc-canvas)
+## Play in the browser (roc-web)
 
 The browser app lives here (`example/web.roc` + `web/`), built on
-[roc-canvas](https://github.com/ricardo-valero/roc-canvas) — a wasm32 Roc
-platform (Zig host + WebGPU renderer) referenced by relative path until it
-publishes release bundles, so keep the two repos as siblings:
-
-```
-dev/
-├── roc-ngb-emu/     # this repo: core, rom/play.gb, example/web.roc, web/
-└── roc-canvas/      # the platform (github.com/ricardo-valero/roc-canvas)
-```
-
-One-time platform build (and again after any change to its Zig host):
-
-```bash
-(cd ../roc-canvas && nix develop --command zig build)
-```
-
-Then from this repo (inside `nix develop`):
+[roc-web](https://github.com/ricardo-valero/roc-web) — a wasm32 Roc
+platform (Zig host + WebGPU renderer) referenced by release-bundle URL,
+just like roc-ray. Inside `nix develop`:
 
 ```bash
 roc build example/web.roc --output=web/play.wasm   # embeds rom/play.gb
@@ -52,11 +38,10 @@ python3 -m http.server 8642 --directory web        # open http://localhost:8642/
 ```
 
 Same controls as the windowed app (no Esc — it's a browser tab). The page
-picks WebGPU and falls back to Canvas2D; the status line shows which. After
-rebuilding the Zig host, pass `--no-cache` to `roc build` so the platform is
-re-linked. Headless check without a browser:
-`node ../roc-canvas/www/test.js web/play.wasm 300` (node is in roc-canvas's
-shell). Full spike evidence and benchmarks:
+picks WebGPU and falls back to Canvas2D; the status line shows which.
+Version discipline mirrors roc-ray: a roc-web release pairs with the Roc
+nightly it was built against — bump the platform URL and the flake pin
+together. Full spike evidence and benchmarks:
 `openspec/changes/wasm-platform-spike/report.md`.
 
 ## Verification
@@ -97,8 +82,9 @@ Development uses the new (Zig-based) Roc compiler, pinned via the Nix flake.
 The pre-migration code (2024 Roc syntax and toolchain) lives on the `legacy`
 branch. Frontends: [roc-ray](https://github.com/lukewilliamboswell/roc-ray)
 for the native window (see `spike/rocray-hello/SPIKE.md` for toolchain
-pairing notes) and roc-canvas for the browser — roc-canvas pins the same Roc
-nightly as this repo's flake; bump them together.
+pairing notes) and [roc-web](https://github.com/ricardo-valero/roc-web) for
+the browser — each platform release pairs with a Roc nightly; bump platform
+URLs and the flake pin together.
 
 Get in touch and let's work on this together!
 

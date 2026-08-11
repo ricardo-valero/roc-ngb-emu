@@ -1,14 +1,13 @@
-# Play a Game Boy ROM in the browser on the roc-canvas platform (WebGPU).
-# Expects a sibling checkout of roc-canvas (see README). Like play.roc, the
-# ROM at rom/play.gb is embedded at build time.
+# Play a Game Boy ROM in the browser on the roc-web platform (WebGPU).
+# Like play.roc, the ROM at rom/play.gb is embedded at build time.
 # Build: roc build example/web.roc --output=web/play.wasm
 # Buttons arrive as a packed u32: bit0..7 = Right,Left,Up,Down,A,B,Select,Start.
 app [Model, main] {
-    canvas: platform "../../roc-canvas/platform/main.roc",
+    web: platform "https://github.com/ricardo-valero/roc-web/releases/download/v0.1.0/ExwxkBUq3qJZSaV4KgXdTw6ePf5FCbYJU3wEoYmvJgrx.tar.zst",
     ngb: "../package/main.roc",
 }
 
-import canvas.Host
+import web.Host
 import ngb.GameBoy
 import "../rom/play.gb" as rom : List(U8)
 
