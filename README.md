@@ -13,13 +13,17 @@ WebGPU on the [roc-web](https://github.com/ricardo-valero/roc-web) platform
 (see below) — pixel-identical to native, 90+ fps. Not yet: speaker output (the browser path unblocks this
 via Web Audio; roc-ray needs a PCM-streaming API), battery saves, MBC3 RTC.
 
-Play a ROM — the app embeds `rom/play.gb` at **build time**, so swap the
+The repo splits into `package/` (the emulator core, pure Roc),
+`app/` (the two frontends: `ray/` native window, `web/` browser), and
+`example/` (headless dev tools that exercise the core).
+
+Play a ROM — the apps embed `rom/play.gb` at **build time**, so swap the
 file first, then rebuild (all inside `nix develop`):
 
 ```bash
-nix run .#fetch-roms                # first time: seeds rom/play.gb with dmg-acid2
-cp your-game.gb rom/play.gb         # any 32 KiB / MBC1 / MBC3 ROM
-roc build example/play.roc && ./play
+nix run .#fetch-roms                     # first time: seeds rom/play.gb with dmg-acid2
+cp your-game.gb rom/play.gb              # any 32 KiB / MBC1 / MBC3 ROM
+roc build app/ray/main.roc --output=ray && ./ray
 ```
 
 Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select,
@@ -27,14 +31,14 @@ Esc quits.
 
 ## Play in the browser (roc-web)
 
-The browser app lives here (`example/web.roc` + `web/`), built on
+The browser app lives in `app/web/` (`main.roc` + `index.html`), built on
 [roc-web](https://github.com/ricardo-valero/roc-web) — a wasm32 Roc
 platform (Zig host + WebGPU renderer) referenced by release-bundle URL,
 just like roc-ray. Inside `nix develop`:
 
 ```bash
-roc build example/web.roc --output=web/play.wasm   # embeds rom/play.gb
-python3 -m http.server 8642 --directory web        # open http://localhost:8642/
+roc build app/web/main.roc --output=app/web/play.wasm   # embeds rom/play.gb
+python3 -m http.server 8642 --directory app/web         # open http://localhost:8642/
 ```
 
 Same controls as the windowed app (no Esc — it's a browser tab). The page

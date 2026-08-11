@@ -1,8 +1,8 @@
 rom/
 spike/rocray-hello/main
 .direnv/
-/play
+/ray
 /main
 golden/*.ppm
 golden/*.wav
-web/*.wasm
+app/web/*.wasm
