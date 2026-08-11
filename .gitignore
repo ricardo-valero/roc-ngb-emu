@@ -7,3 +7,4 @@ check/*/*.ppm
 check/*/*.wav
 app/web/*.wasm
 .claude/settings.local.json
+app/web/play.gb
