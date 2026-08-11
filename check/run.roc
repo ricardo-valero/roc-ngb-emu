@@ -1,13 +1,14 @@
 app [main!] {
     pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.21.0/4rAQg8kUYZ3Vksr4qMQHpaFYNiHSn9GgS7gVxghd1XYV.tar.zst",
     ngb: "../package/main.roc",
+    chk: "lib/main.roc",
 }
 
 import pf.OsStr
 import pf.Path
 import pf.Stdout
 import ngb.GameBoy
-import ngb.Harness
+import chk.Harness
 
 # Suite runner shared by the ROM check slices. First arg is the slice's
 # passlist, the rest are ROM paths. Listed ROMs gate — any failure exits

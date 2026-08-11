@@ -1,13 +1,14 @@
 app [main!] {
     pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.21.0/4rAQg8kUYZ3Vksr4qMQHpaFYNiHSn9GgS7gVxghd1XYV.tar.zst",
     ngb: "../../package/main.roc",
+    chk: "../lib/main.roc",
 }
 
 import pf.OsStr
 import pf.Path
 import pf.Stdout
 import ngb.GameBoy
-import ngb.Sha256
+import chk.Sha256
 
 # Headless frame capture, and the acid2 golden check.
 # Tool mode:  roc run check/acid2/main.roc -- <rom.gb> <out.ppm> [frames]
