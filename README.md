@@ -56,10 +56,10 @@ ROM list (fetched by Nix with pinned hashes — no shared ROM folder), and
 its passlist or golden, wired up in `flake.nix`:
 
 ```bash
-nix run .#check-blargg        # CPU: cpu_instrs + Blargg timing ROMs
+nix run .#check-blargg        # Blargg suites: cpu_instrs, timing, dmg_sound
 nix run .#check-mooneye       # timing/halt: mooneye acceptance subset
 nix run .#check-acid2         # PPU: dmg-acid2 vs golden digest
-nix run .#check-sound         # APU: passlist gate + golden WAV digest
+nix run .#check-sound         # APU: golden WAV digest of 01-registers
 ```
 
 ROM suites gate on the slice's `passlist` (listed ROMs must pass — the set

@@ -36,3 +36,13 @@ See proposal.md. Round one (superseded, visible in this branch's first commit) u
 - **One pinned source for retrio/gb-test-roms** (`check/gb-test-roms.nix`, `fetchFromGitHub` rev `c240dd7d` + hash) replaces every per-file URL+hash pair; slices list plain repo-relative paths. Mirrors the mooneye tarball pattern.
 - **Check logic lives in Roc, not bash.** `check/run.roc` (suite loop, passlist gating, promotion hints), `check/acid2/main.roc --check`, and `check/sound/main.roc` implement everything the shell scripts did; each `package.nix` is now just "fetch pinned ROMs, invoke the Roc program with store paths". Exit-3-on-bless became exit-1 (basic-cli maps Err to 1) — still nonzero, so CI still can't bless silently.
 - **`package/Sha256.roc`**: SHA-256 in pure Roc (FIPS vectors as expects) so golden digests stay byte-compatible with the sha256sum-era files — the untouched goldens passing is the end-to-end proof. Nightly quirks found on the way, worth remembering: type errors can defer to runtime as "dispatch on a value that can never exist" (the U64 shift-amount param is U8), and the flow analyzer emits spurious UNCONDITIONAL CONDITION warnings on `??`-with-effectful-call results.
+
+## Round five (user review): dmg_sound conformance merges into blargg
+
+The dmg_sound singles' pass/fail runs are the same kind of thing as
+cpu_instrs — Blargg ROM through the verdict runner against a passlist — so
+they join `check/blargg` (passlist gains `01-registers.gb`), and
+`check/sound` shrinks to its true identity: the golden WAV regression of
+01-registers only (no passlist, one ROM arg). Merging immediately paid
+off: `04-sweep.gb` and `06-overflow on trigger.gb` turned out to pass and
+were promoted — blargg now gates 16.

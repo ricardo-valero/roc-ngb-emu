@@ -11,3 +11,6 @@ cpu_instrs.gb
 10-bit ops.gb
 11-op a,(hl).gb
 instr_timing.gb
+01-registers.gb
+04-sweep.gb
+06-overflow on trigger.gb
