@@ -36,3 +36,29 @@ See proposal.md and the 2026-08-11 exploration. Reference points: `app/ray.roc` 
 
 - Whether `blit!` keeps taking width/height args (redundant with config) or drops to just pixels — decide when writing `App.roc`; cosmetic for the app.
 - Exact Key enum membership beyond the GB-needed eight — additive later, non-blocking.
+
+## Round two (user review after hearing it): audio v2 — pull-paced, ring-free
+
+v0.2.0's audio worked but was messy in both senses: rAF-paced production
+(~50 fps ticks) chronically underfed the 48 kHz consumer (audible), and
+the Zig ring + read/write indices + JS modulo-pump was three pieces of
+bookkeeping for one buffer. Redesign, prompted by "consider raylib's
+AudioStream and wasmboy's worklet architecture":
+
+- **Audio-driven pacing (wasmboy's `executeFrameAndCheckAudio`, raylib's
+  backpressure)**: each rAF tick runs emulated frames *until the worklet
+  reports enough queued audio* (target ~60 ms, cap 4 frames/tick), then
+  presents the latest frame. Emulation locks to the audio clock; video
+  tags along. Apps that never queue audio fall back to 1 frame per tick.
+- **Granular JS imports replace the ring**: `host_queue_audio` calls an
+  imported `env.js_audio_push(ptr, len)` synchronously (wasm memory is
+  stable during the call); JS copies once and posts the transferable to
+  the worklet, whose internal queue is now the *only* buffer (capped
+  ~250 ms, drop-oldest). The Zig ring, its exports, and the pump loop are
+  deleted. Backpressure flows back as queued-ms via the worklet port.
+- **Web-API note (user question)**: wasm still cannot call browser APIs
+  directly — imports are the mechanism (the 2016 answer remains true;
+  WebIDL-bindings died, the component model doesn't cover Web APIs). This
+  design leans into that: more granular imports = less JS orchestration.
+- Roc-facing API unchanged (`Host.queue_audio!`); apps unaffected beyond
+  the platform URL bump. Ships as roc-web v0.2.1.

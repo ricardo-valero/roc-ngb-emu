@@ -39,12 +39,19 @@ export async function start(wasmUrl, opts = {}) {
 async function run(wasmUrl, opts, status, canvas) {
   status.textContent = 'loading…';
 
+  const audio = await createAudio();
+  let hasAudio = false;
+
   const module = await WebAssembly.compileStreaming(fetch(wasmUrl));
   const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384 });
   const decoder = new TextDecoder();
   const env = {
     memory,
     js_log: (p, l) => console.log('[roc]', decoder.decode(new Uint8Array(memory.buffer, p, l))),
+    js_audio_push: (p, l) => {
+      hasAudio = true;
+      audio.push(new Float32Array(memory.buffer, p, l));
+    },
   };
   const instance = await WebAssembly.instantiate(module, { env });
   const x = instance.exports;
@@ -77,17 +84,31 @@ async function run(wasmUrl, opts, status, canvas) {
   }
   attachFileInput(loadBytes);
 
-  // Audio
-  const audio = await createAudio();
+  // Frame pacing: once the app queues audio and the context is running,
+  // emulation locks to the audio clock — each tick runs frames until the
+  // worklet holds ~TARGET_MS of samples (raylib-style backpressure,
+  // wasmboy's executeFrameAndCheckAudio). Silent apps get 1 frame per rAF.
+  const TARGET_MS = 60;
+  const MAX_FRAMES_PER_TICK = 4;
 
   const fb = () => new Uint8Array(memory.buffer, x.framebuffer_ptr(), x.framebuffer_len());
   let frames = 0, last = performance.now();
   function tick() {
-    x.render_frame(getKeys());
-    renderer.uploadTexture(fb());
-    renderer.renderTexture();
-    audio.pump(memory, x);
-    frames += 1;
+    let ran = 0;
+    if (hasAudio && audio.running()) {
+      while (audio.queuedMs() < TARGET_MS && ran < MAX_FRAMES_PER_TICK) {
+        x.render_frame(getKeys());
+        ran += 1;
+      }
+    } else {
+      x.render_frame(getKeys());
+      ran = 1;
+    }
+    if (ran > 0) {
+      renderer.uploadTexture(fb());
+      renderer.renderTexture();
+    }
+    frames += ran;
     const now = performance.now();
     if (now - last >= 1000) {
       status.textContent = `${backend} · ${frames} fps · ${audio.health()}`;

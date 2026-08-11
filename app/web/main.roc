@@ -3,7 +3,7 @@
 # file onto the page (or use the picker) to swap games — no rebuild.
 # Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select.
 app [Model, program] {
-    web: platform "https://github.com/ricardo-valero/roc-web/releases/download/v0.2.0/Ck7TFJrjYna7s3NGYCotQh4SZQ5UPTz444pbdziua6Ez.tar.zst",
+    web: platform "https://github.com/ricardo-valero/roc-web/releases/download/v0.2.1/8P65Tbg3xjD6MpJx33quQKJES9SkV9aRGRn59juib6sz.tar.zst",
     ngb: "../../package/main.roc",
 }
 

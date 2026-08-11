@@ -1,6 +1,10 @@
 // AudioWorklet processor: queues interleaved stereo F32 chunks posted from
 // the main thread and feeds the output; underflow plays silence. Reports
 // queued milliseconds back for the status line.
+// Queue cap: ~250 ms of interleaved stereo at 48 kHz; beyond it, drop the
+// oldest chunks (the pacer should keep us far below this).
+const MAX_QUEUED = 48000 * 2 * 0.25;
+
 class RocWebAudio extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -10,6 +14,11 @@ class RocWebAudio extends AudioWorkletProcessor {
     this.port.onmessage = (e) => {
       this.chunks.push(e.data);
       this.queued += e.data.length;
+      while (this.queued > MAX_QUEUED && this.chunks.length > 1) {
+        const dropped = this.chunks.shift();
+        this.queued -= dropped.length - (this.chunks.length === 0 ? this.offset : 0);
+        this.offset = 0;
+      }
     };
   }
 

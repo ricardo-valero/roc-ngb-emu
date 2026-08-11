@@ -1,8 +1,10 @@
-// Audio path: drain the host's F32 ring each frame and post transferable
-// chunks to the AudioWorklet (no SharedArrayBuffer, no special headers —
-// see the roc-web design notes). Resumes the context on first gesture.
+// Audio path, v2 (pull-paced, ring-free): the wasm host pushes sample
+// chunks synchronously via the js_audio_push import; we copy once and post
+// the transferable to the AudioWorklet, whose queue is the only buffer.
+// The worklet reports queued milliseconds back — that number drives the
+// frame pacer in roc-web.js (raylib-style backpressure).
 export async function createAudio() {
-  let ctx = null, node = null, read = 0, queuedMs = 0;
+  let ctx = null, node = null, queuedMs = 0;
 
   try {
     ctx = new AudioContext({ sampleRate: 48000 });
@@ -18,22 +20,14 @@ export async function createAudio() {
   }
 
   return {
-    pump(memory, exports) {
+    // view is a Float32Array over wasm memory, only valid during this call
+    push(view) {
       if (!node) return;
-      const size = exports.audio_ring_samples();
-      const write = exports.audio_write_index();
-      let pending = (write - read) >>> 0;       // wrapping u32 distance
-      if (pending === 0) return;
-      if (pending > size) {                     // overrun: skip to freshest
-        read = write - size;
-        pending = size;
-      }
-      const ring = new Float32Array(memory.buffer, exports.audio_ring_ptr(), size);
-      const out = new Float32Array(pending);
-      for (let i = 0; i < pending; i += 1) out[i] = ring[(read + i) % size];
-      read = write;
-      node.port.postMessage(out, [out.buffer]);
+      const copy = new Float32Array(view);
+      node.port.postMessage(copy, [copy.buffer]);
     },
+    running: () => ctx?.state === 'running',
+    queuedMs: () => queuedMs,
     health() {
       if (!node) return 'no audio';
       return ctx.state === 'running' ? `audio ${queuedMs | 0}ms` : 'audio: press a key';
