@@ -3,7 +3,7 @@
 # Blargg's memory-reporting protocol (signature DE B0 61 at 0xA001, status
 # at 0xA000: 0x80 while running, 0 = pass), and mooneye's serial bytes
 # (Fibonacci 3,5,8,13,21,34 = pass, six 0x42 = fail).
-import /GameBoy
+import ngb.GameBoy
 
 Harness := [].{
     # Combined verdict across all three protocols

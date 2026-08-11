@@ -13,9 +13,10 @@ Mmu := {
     apu_events : List(U8), # channel triggers (0-3) and power-off (0xF0), drained by the APU
     samples : List(F32), # APU output ring (preallocated: append-in-spread clones, set does not)
     sample_count : U64, # write index into the ring
-    mbc : [None, Mbc1, Mbc3],
-    rom_bank : U8, # raw register value; 0->1 translation happens at read
-    bank2 : U8, # MBC1 secondary register / MBC3 RAM bank (or RTC select)
+    mbc : [None, Mbc1, Mbc3, Mbc5],
+    rom_bank : U8, # raw register value; 0->1 translation happens at read (not MBC5)
+    rom_bank_hi : U8, # MBC5 ninth ROM bank bit (0x3000-0x3FFF register)
+    bank2 : U8, # MBC1 secondary register / MBC3+MBC5 RAM bank (or RTC select)
     mode : Bool, # MBC1 banking mode
     ram_enable : Bool,
 }.{
@@ -39,6 +40,8 @@ Mmu := {
                 Mbc1
             } else if type_byte >= 0x0F and type_byte <= 0x13 {
                 Mbc3
+            } else if type_byte >= 0x19 and type_byte <= 0x1E {
+                Mbc5
             } else {
                 None
             }
@@ -46,7 +49,7 @@ Mmu := {
         base = {
             mem: List.repeat(0, 0x10000),
             rom: rom,
-            cart_ram: List.repeat(0, 0x8000),
+            cart_ram: List.repeat(0, 0x20000), # 128 KiB: MBC5's max (16 banks); others mask lower
             serial_out: [],
             div_counter: 0,
             tima_counter: 0,
@@ -56,6 +59,7 @@ Mmu := {
             sample_count: 0,
             mbc: mbc,
             rom_bank: 1,
+            rom_bank_hi: 0,
             bank2: 0,
             mode: Bool.False,
             ram_enable: Bool.False,
@@ -133,6 +137,10 @@ Mmu := {
                 b = mmu.rom_bank.bitwise_and(0x7F)
                 (if b == 0x00 { 1 } else { b.to_u64() }) % bank_count(mmu)
             }
+
+            # 9-bit bank, and bank 0 IS selectable (no zero->one translation)
+            Mbc5 =>
+                mmu.rom_bank_hi.bitwise_and(0x01).to_u64().shl_wrap(8).plus(mmu.rom_bank.to_u64()) % bank_count(mmu)
         }
 
     # 0x0000-0x3FFF is bank 0 except MBC1 mode 1, where bank2 maps it
@@ -165,6 +173,13 @@ Mmu := {
             Mbc3 =>
                 if mmu.ram_enable and mmu.bank2 <= 0x03 {
                     Bank(mmu.bank2.to_u64())
+                } else {
+                    Invalid
+                }
+
+            Mbc5 =>
+                if mmu.ram_enable {
+                    Bank(mmu.bank2.bitwise_and(0x0F).to_u64())
                 } else {
                     Invalid
                 }
@@ -371,6 +386,19 @@ Mmu := {
                 } else {
                     mmu # RTC latch: ignored
                 }
+
+            Mbc5 =>
+                if addr < 0x2000 {
+                    { ..mmu, ram_enable: value.bitwise_and(0x0F) == 0x0A }
+                } else if addr < 0x3000 {
+                    { ..mmu, rom_bank: value } # full 8 bits, 0 allowed
+                } else if addr < 0x4000 {
+                    { ..mmu, rom_bank_hi: value.bitwise_and(0x01) }
+                } else if addr < 0x6000 {
+                    { ..mmu, bank2: value.bitwise_and(0x0F) } # rumble carts' motor bit masked off
+                } else {
+                    mmu
+                }
         }
 
     request_interrupt : Mmu, U8 -> Mmu
@@ -522,6 +550,31 @@ expect Mmu.init(big_rom(0x01)).write(0x4000, 0x01).read(0x0000) == 0x00 # mode 0
 expect Mmu.init(big_rom(0x11)).write(0x2000, 0x05).read(0x4000) == 0x05
 expect Mmu.init(big_rom(0x11)).write(0x2000, 0x00).read(0x4000) == 0x01
 expect Mmu.init(big_rom(0x11)).write(0x2000, 0x3F).read(0x4000) == 0x3F
+
+# MBC5: 8-bit low register, bank 0 selectable (no zero->one translation)
+expect Mmu.init(big_rom(0x19)).read(0x4000) == 0x01 # power-on register value is 1
+expect Mmu.init(big_rom(0x19)).write(0x2000, 0x05).read(0x4000) == 0x05
+expect Mmu.init(big_rom(0x19)).write(0x2000, 0x00).read(0x4000) == 0x00
+# MBC5: ninth bit wires in above the low byte (bank 256+2 wraps 64 banks -> 2)
+expect Mmu.init(big_rom(0x19)).write(0x2000, 0x02).write(0x3000, 0x01).read(0x4000) == 0x02
+expect Mmu.init(big_rom(0x19)).write(0x2000, 0x42).write(0x3000, 0x01).read(0x4000) == 0x02 # 0x142 % 64
+# MBC5: the 0x3000 register does not disturb the low byte
+expect Mmu.init(big_rom(0x19)).write(0x2000, 0x07).write(0x3000, 0x00).read(0x4000) == 0x07
+# MBC5: zero region stays bank 0
+expect Mmu.init(big_rom(0x19)).write(0x2000, 0x05).read(0x0000) == 0x00
+# MBC5 RAM banking: 4-bit select, each bank keeps its own contents
+expect {
+    m =
+        Mmu.init(big_rom(0x1A))
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x00)
+            .write(0xA000, 0x11)
+            .write(0x4000, 0x0F)
+            .write(0xA000, 0x22)
+    m.write(0x4000, 0x00).read(0xA000) == 0x11 and m.write(0x4000, 0x0F).read(0xA000) == 0x22
+}
+# MBC5 RAM: disabled reads 0xFF
+expect Mmu.init(big_rom(0x1A)).write(0xA000, 0x55).read(0xA000) == 0xFF
 
 # Cartridge RAM: gated by enable; disabled reads 0xFF and drops writes
 expect Mmu.init(big_rom(0x03)).write(0xA000, 0x55).read(0xA000) == 0xFF
