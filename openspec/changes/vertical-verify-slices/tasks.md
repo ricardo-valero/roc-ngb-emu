@@ -1,20 +1,25 @@
-# Tasks — vertical-verify-slices
+# Tasks — vertical-verify-slices (revised)
 
-## 1. Ride-along rename
+## 1. Ride-along rename (done in round one)
 
-- [x] 1.1 `app/ray/main.roc` → `app/ray.roc` (no folder for a single file); update README command; verify `roc build app/ray.roc --output=ray` builds
+- [x] 1.1 `app/ray/main.roc` → `app/ray.roc`; README command updated; build verified
 
-## 2. The blargg slice
+## 2. Harness extraction
 
-- [x] 2.1 `nix/lib.nix`: `fetchRoms` helper generating the curl-with-cache script text (dir, base URL, rom list; space URL-encoding as today)
-- [x] 2.2 `verify/blargg/main.roc`: move `example/blargg.roc` unchanged; `verify/blargg/package.nix`: writeShellApplication `verify-blargg` = scoped fetch (cpu_instrs list only) + per-ROM `roc run` loop with today's PASS/FAIL/12-of-12 output and exit semantics
-- [x] 2.3 Repoint `nix/check-sound.nix` and `nix/run-ladder.nix` at `verify/blargg/main.roc`; delete `nix/run-blargg.nix`; remove the cpu_instrs section and the `rom/play.gb` auto-seed block from `nix/fetch-roms.nix`; README documents explicit `cp` into `rom/play.gb`
+- [x] 2.1 `package/Harness.roc`: move Blargg serial/memory-protocol and mooneye detection out of the runner as pure functions, exposed from `package/main.roc`, with inline expects; `roc test` passes
 
-## 3. Flake discovery
+## 3. Slices (fetchurl + passlist pattern)
 
-- [x] 3.1 `flake.nix`: discover `verify/*/package.nix` via readDir → `packages.verify-<name>`; devshell includes discovered slices; drop the explicit run-blargg wiring; `git add` everything so the flake sees it
+- [x] 3.1 Prefetch hashes; `checks/blargg/{main.roc,roms.nix,passlist,package.nix}` — cpu_instrs + Blargg timing ROMs; 13 gate, mem_timing* informative
+- [x] 3.2 `checks/mooneye/{main.roc,package.nix,passlist}` — tarball fetchurl + extraction derivation; 6 gate
+- [x] 3.3 `checks/acid2/{main.roc,package.nix,golden.sha256}` — frame dumper moved from `example/frame.roc`; digest flow unchanged
+- [x] 3.4 `checks/sound/{main.roc,wav.roc,package.nix,passlist,golden.sha256}` — verdict runner + WAV renderer moved from `example/wav.roc`; 01-registers gates, singles informative, WAV digest unchanged
 
-## 4. Verify no regression
+## 4. Flake, deletions, docs
 
-- [x] 4.1 `nix run .#verify-blargg` reports 12/12 identically; `nix run .#check-sound`, `.#run-ladder`, `.#check-acid2` all pass unchanged
-- [x] 4.2 `roc test package/main.roc` passes; both apps build (`app/ray.roc`, `app/web/main.roc`); README reflects the new commands and layout
+- [x] 4.1 `flake.nix`: discovery over `checks/` → `packages.check-<name>`; `dmg-acid2-rom` package; devshell drops all checks; delete `nix/{run-ladder,check-acid2,check-sound,fetch-roms,lib}.nix`, `golden/`, `verify/`
+- [x] 4.2 README: verification section (four `check-*` commands, passlist/bless docs), tool paths, `rom/play.gb` zero-ROM path via `dmg-acid2-rom`
+
+## 5. Verify no regression
+
+- [x] 5.1 All four checks pass with the same gating sets as before the split; `roc test package/main.roc` passes; both apps build

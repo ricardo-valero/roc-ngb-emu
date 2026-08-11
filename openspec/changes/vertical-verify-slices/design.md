@@ -1,46 +1,31 @@
-# Design — vertical-verify-slices
+# Design — vertical-verify-slices (revised)
 
 ## Context
 
-See proposal.md for motivation and the 2026-08-10 explore session for the full discussion. Constraints that shape the approach:
-
-- `roc build`/`roc run` download platform bundles at first use, so Nix *derivations* can't compile Roc apps in the sandbox (no network). Today's checks run roc at runtime inside `writeShellApplication`; slices keep that model.
-- `example/blargg.roc` is invoked by path from `check-sound.nix` (the `01-registers` gate + informative singles) and `run-ladder.nix`; those must keep working mid-migration.
-- ROMs are untracked, cached under `rom/`; flakes only see tracked files (`git add` before `nix run`).
-- Naming decided in exploration: top-level dir `verify/` (matches the `*-verification` spec vocabulary; `checks/` was rejected as misleading — these can't be `nix flake check` checks precisely because of the runtime-roc constraint).
+See proposal.md. Round one (superseded, visible in this branch's first commit) used a curl-with-cache helper into `$PWD/rom` and kept ladder/check scripts; user review 2026-08-10 redirected to the design below. Standing constraints: Roc apps can't compile inside the Nix sandbox (platform bundles need network), so checks still `roc run` at runtime; flakes only see tracked files.
 
 ## Goals / Non-Goals
 
-**Goals:**
+**Goals:** every check is one folder; ROMs are store paths with pinned hashes; one uniform passlist mechanism; `flake.nix` never edited for new checks; devshell free of checks.
 
-- One slice (`verify/blargg/`) that fully owns its code, ROM list, and packaging, invoked as `nix run .#verify-blargg`.
-- Flake auto-discovery so slice #2 (and beyond) never edits `flake.nix`.
-- A fetch helper that scopes downloads to what a slice actually needs.
-
-**Non-Goals:**
-
-- Migrating acid2/sound/ladder (follow-up changes, mechanical once the pattern is proven).
-- `package/Harness.roc` extraction — premature with one consumer moved; do it when sound migrates and sharing actually begins.
-- Hermetic Roc builds in Nix (would need the platform bundle as a fixed-output derivation + a way to point roc's cache at it — its own spike).
-- Any change to what the check verifies or reports.
+**Non-Goals:** hermetic Roc builds (own spike); changing what any check verifies.
 
 ## Decisions
 
-- **Slice layout `verify/<name>/{main.roc, package.nix}`**, goldens/passlists join their slice when their suite migrates. Alternative (flat `verify/blargg.roc` + `verify/blargg.nix`) rejected: the folder is the unit the flake discovers, and later slices carry extra files (goldens) anyway.
-- **`package.nix` is a `callPackage`-style function returning one `writeShellApplication`** named `verify-<name>`, which (1) fetches its ROM list via the shared helper, (2) runs the suite by `roc run verify/<name>/main.roc -- <rom>` per ROM, preserving today's per-ROM PASS/FAIL output and exit semantics. Rationale: smallest possible contract; a slice is "a function from pkgs to a runnable check".
-- **Discovery in `flake.nix`**: `builtins.readDir ./verify` filtered to directories, mapped to `packages."verify-${name}" = pkgs.callPackage ./verify/${name}/package.nix { inherit roc fetch-lib; }`. The devshell includes all discovered slices via the same attrset. Alternative (explicit list) rejected: defeats the never-edit-the-flake goal.
-- **`nix/lib.nix` fetch helper**: a function `fetchRoms { dir, base?, roms }` producing shell text that curls each missing file into `rom/<dir>/` (URL-encoding spaces, mirroring today's loop). It generates *script text* consumed inside the slice's `writeShellApplication` rather than a derivation, because the ROM cache is runtime state in the working tree, not a store path. Alternative (per-slice inline curl loops) rejected: three near-identical loops existed in fetch-roms already; the drift risk is real.
-- **Repoint, don't duplicate, the shared runner**: `check-sound.nix` and `run-ladder.nix` get a one-line path change to `verify/blargg/main.roc`. This creates two cross-slice references — accepted as *temporary* wiring debt, explicitly resolved by the Harness extraction when sound migrates. Alternative (copy the runner into each consumer now) rejected: three copies of protocol code with zero test coverage over the copies.
-- **`rom/cpu_instrs/` cache location is unchanged**, so already-fetched ROMs are reused and `fetch-roms` (still fetching sound/acid2/ladder/play.gb) remains compatible during the transition.
-- **`app/ray/main.roc` → `app/ray.roc`**: single-file apps sit directly under `app/`; `app/web/` stays a folder because it genuinely bundles two files. Update README and `/ray` build command accordingly.
+- **`checks/<name>/package.nix` → `packages.check-<name>`** via readDir discovery. Uniform with the pre-existing `check-acid2`/`check-sound` naming the user wants kept.
+- **ROMs are `fetchurl` store paths.** Each slice's `roms.nix` is a bare list of `{ url, hash }` — the user's "just a list of URLs" plus the integrity hash Nix requires. Display/passlist names derive from the URL basename (percent-decoded); store names sanitize spaces. Hashes gathered once with `nix store prefetch-file`. The mooneye set comes from the official `.tar.xz` via `fetchurl` + a small `runCommand` extraction, so it's equally pinned and cached.
+- **One passlist mechanism, per slice.** A `passlist` file in the slice: listed ROMs gate (fail ⇒ suite fails; the set never shrinks), unlisted report informatively with a promotion hint. blargg = 13 gating (12 cpu_instrs + instr_timing) + 4 informative timing ROMs; mooneye = 6 gating + rest informative; sound = `01-registers.gb` gating + 11 informative singles. This is `run-ladder`'s logic generalized — so `run-ladder` is deleted, not migrated.
+- **`package/Harness.roc` now, not later.** With three slice runners the protocol detection (serial text, `$A000` memory protocol, mooneye Fibonacci bytes) would otherwise exist in three copies; as pure `GameBoy ->` functions it belongs in the package, tested by `roc test`. Slice runners are thin per-slice mains (blargg/mooneye/sound share shape but not files — verticality over DRY for the 40-line loop; the shared logic lives below in the package).
+- **acid2/sound goldens live in their slices** (`checks/<name>/golden.sha256`); compare-or-create and bless-by-deletion semantics unchanged; viewable bless/mismatch artifacts are written next to the golden and gitignored.
+- **`example/frame.roc` and `example/wav.roc` move into their slices** (acid2's main.roc, sound's wav.roc) — they were the checks' engines; both remain runnable by hand and the README documents the new paths. `example/` keeps the genuinely standalone `cartridge.roc` and `debug.roc`.
+- **`rom/` is app-only** (`play.gb`). The acid2 fetchurl is exposed as `packages.dmg-acid2-rom` so the zero-ROM path is `cp "$(nix build .#dmg-acid2-rom --print-out-paths)" rom/play.gb`.
 
 ## Risks / Trade-offs
 
-- [Discovery makes packages implicit — a broken `package.nix` breaks `nix flake show` for everything] → One slice exercises the mechanism now; the pattern is `callPackage` with a fixed argument set, so new slices fail early and locally.
-- [Cross-slice paths from check-sound/run-ladder into `verify/blargg/`] → Documented here as temporary; removed by the sound migration + Harness extraction follow-up.
-- [Contributors habituated to `nix run .#run-blargg`] → README updated; the old attribute disappears rather than aliasing, so muscle memory fails loudly once instead of silently drifting.
-- [Flake-invisible files: forgetting `git add verify/` makes discovery silently find nothing] → Known repo gotcha (memory: flakes only see tracked files); the task list makes `git add` explicit.
+- [Upstream re-uploads would change hashes] → fetchurl fails loudly on mismatch; that's the feature.
+- [Three thin runners can drift] → the drift-prone part (protocols) is in `Harness.roc` under `roc test`; the loops are trivially small.
+- [Gating regressions during the split] → blargg+mooneye passlists are copied verbatim from `golden/ladder.passlist` + the 12 cpu_instrs; task 4 re-runs everything.
 
 ## Open Questions
 
-- None blocking. Whether `verify-<name>` or `<name>` is the flake attribute prefix for future non-check slices can wait until a non-check slice exists.
+- None blocking.

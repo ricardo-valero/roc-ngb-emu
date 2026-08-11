@@ -1,6 +1,6 @@
 app [main!] {
     pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.21.0/4rAQg8kUYZ3Vksr4qMQHpaFYNiHSn9GgS7gVxghd1XYV.tar.zst",
-    ngb: "../package/main.roc",
+    ngb: "../../package/main.roc",
 }
 
 import pf.OsStr
@@ -10,7 +10,7 @@ import ngb.GameBoy
 
 # Headless frame capture: run a ROM for N frames (default 300, ~5s of
 # emulated time) and write the final framebuffer as a P6 PPM image.
-# Usage: roc run example/frame.roc -- <rom.gb> <out.ppm> [frames]
+# Usage: roc run checks/acid2/main.roc -- <rom.gb> <out.ppm> [frames]
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {

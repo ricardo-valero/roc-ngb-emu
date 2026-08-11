@@ -1,6 +1,6 @@
 app [main!] {
     pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.21.0/4rAQg8kUYZ3Vksr4qMQHpaFYNiHSn9GgS7gVxghd1XYV.tar.zst",
-    ngb: "../package/main.roc",
+    ngb: "../../package/main.roc",
 }
 
 import pf.OsStr
@@ -10,7 +10,7 @@ import ngb.GameBoy
 
 # Headless audio capture: run a ROM for N frames (default 300) and write the
 # APU's 48 kHz stereo output as a 16-bit PCM WAV.
-# Usage: roc run example/wav.roc -- <rom.gb> <out.wav> [frames]
+# Usage: roc run checks/sound/wav.roc -- <rom.gb> <out.wav> [frames]
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {

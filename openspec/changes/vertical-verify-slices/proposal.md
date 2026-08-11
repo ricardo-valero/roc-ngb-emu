@@ -1,24 +1,29 @@
-# Vertical verify slices (first slice: blargg)
+# Vertical check slices (revised after user review)
 
 ## Why
 
-The repo is organized by layer, so one logical thing — "the Blargg check" — is smeared across `example/blargg.roc`, `nix/run-blargg.nix`, `nix/fetch-roms.nix`, and `flake.nix`; adding the accuracy ladder (2026-08-10) touched five locations for one feature. The monolithic `fetch-roms` also makes every check download every suite's ROMs (run-blargg pulls the mooneye tarball it never uses). Decided with the user 2026-08-10: reorganize toward vertical slices — each check owns its code, its ROM list, its packaging, and (eventually) its goldens — starting with a **single slice** to prove the pattern before migrating the rest.
+The repo is organized by layer, so one logical thing — "the Blargg check" — is smeared across `example/`, `nix/`, `golden/`, and `flake.nix`. The first implementation round (2026-08-10) proved a single slice but kept too much of the old machinery; user review redirected it: ROMs should be fetched **the Nix way** (`fetchurl` + hash, store paths, no shared `rom/` cache for checks), every ROM suite should carry a **per-slice passlist** (which dissolves `run-ladder` — it was never a separate concern, just the passlist mechanism), naming should be uniform (`check-blargg`, `check-acid2`, `check-sound`), and checks don't belong in the devshell.
 
 ## What Changes
 
-- **New `verify/blargg/` slice**: `main.roc` (the runner, moved from `example/blargg.roc`, behavior identical) + `package.nix` (fetches *only* the cpu_instrs ROMs via a shared curl-with-cache helper, then runs the suite) — invoked as `nix run .#verify-blargg`.
-- **Flake auto-discovery**: `flake.nix` discovers slices by reading `verify/` and `callPackage`-ing each `package.nix`; adding a future slice never edits the flake.
-- **Shared fetch helper in `nix/lib.nix`**: fetching-with-cache into the untracked `rom/` dir is infrastructure, not slice identity; each slice passes its own ROM list.
-- **Removals**: `nix/run-blargg.nix`; the cpu_instrs section of `nix/fetch-roms.nix` (the rest of fetch-roms stays until its suites migrate); the `rom/play.gb` auto-seeding block in fetch-roms (user decision 2026-08-10: app concern hiding in the ROM fetcher — the apps' contract becomes explicit, README documents `cp rom/dmg-acid2.gb rom/play.gb` as the zero-ROM option). `example/blargg.roc` moves rather than being deleted — but note check-sound and run-ladder currently invoke it by path, so they are repointed at `verify/blargg/main.roc` without other changes.
-- **Riding along (user decision)**: `app/ray/main.roc` → `app/ray.roc` — a single-file app needs no folder.
-- Explicitly out of scope, queued for follow-up changes once the pattern is proven: migrating acid2/sound/ladder into slices (dissolving `golden/` and most of `fetch-roms`), extracting the runner's pass/fail protocol detection into a pure `package/Harness.roc` (do it when the *second* slice consumer arrives), and hermetic `roc build` inside Nix derivations (blocked on sandbox networking; slices run roc at runtime like today's scripts).
+- **`checks/<name>/` slices, discovered by the flake as `packages.check-<name>`**:
+  - `checks/blargg/` — runner + `roms.nix` (cpu_instrs set **plus** the Blargg timing ROMs from the old ladder) + `passlist` (the 12 cpu_instrs + `instr_timing.gb` gate; `mem_timing*` informative until they pass).
+  - `checks/mooneye/` — runner + the mooneye halt/timer acceptance ROMs (extracted from the official tarball in a fixed-output-style derivation) + `passlist` (the 6 currently passing).
+  - `checks/acid2/` — the frame-dump app (moved from `example/frame.roc`, still usable by hand) + `golden.sha256` (moved from `golden/`), compare-or-create semantics unchanged.
+  - `checks/sound/` — verdict runner + WAV renderer (moved from `example/wav.roc`) + `passlist` (`01-registers.gb` gates, singles informative) + `golden.sha256`.
+- **ROMs via `pkgs.fetchurl` with hashes** (`roms.nix` per slice: a plain list of `{ url, hash }`, display names derived from URL basenames). No curl loops, no `$PWD/rom` for checks, hash-verified, Nix-cached.
+- **`package/Harness.roc`**: the pass/fail protocol detection (Blargg serial text, Blargg memory signature, mooneye Fibonacci bytes) moves into the package as pure functions — it has multiple consumers now, so the extraction earlier deferred is due. Slice runners become thin ~40-line files; no cross-slice paths remain.
+- **Deletions**: `nix/run-blargg.nix` (already gone), `nix/run-ladder.nix`, `nix/check-acid2.nix`, `nix/check-sound.nix`, `nix/fetch-roms.nix`, `nix/lib.nix` (the curl helper from round one), `golden/` (contents move into slices), `verify/` (renamed `checks/`).
+- **Devshell**: checks removed (run them via `nix run .#check-<name>`); shell keeps the toolchain only.
+- **`rom/` remains solely for `rom/play.gb`** (the user-supplied game the apps embed). Zero-ROM convenience: the acid2 ROM is exposed as a package to `cp` from the store.
+- Retained from round one: flake auto-discovery, `app/ray.roc` rename.
 
 ## Capabilities
 
-_None — `skip_specs: true`. Specs describe behavior (a headless runner exists; 12 ROMs pass) and name no paths or commands; this change moves files and rewires packaging without changing any observable check behavior. If a later slice migration changes a check's interface (e.g. bless flow), that change declares the delta._
+_None — `skip_specs: true`, unchanged: specs name behavior, not layout or commands. The checks' observable gate behavior is preserved (same ROMs gate; same goldens; ladder's gating set is preserved verbatim across the split into blargg/mooneye passlists)._
 
 ## Impact
 
-- Files: `verify/blargg/{main.roc,package.nix}` (new), `nix/lib.nix` (new), `flake.nix` (discovery), `nix/run-blargg.nix` (deleted), `nix/fetch-roms.nix` (shrunk), `nix/check-sound.nix` + `nix/run-ladder.nix` (path repoint only), `app/ray.roc` (rename), README (commands + layout note).
-- Verification: `nix run .#verify-blargg` must report 12/12 exactly as `run-blargg` did; check-sound, run-ladder, check-acid2, `roc test package/main.roc`, and both app builds must pass unchanged.
-- Risk: low — no core code changes; the moved runner is byte-identical apart from nothing; the flake discovery is the only new mechanism and is exercised by the one slice.
+- Files: `checks/{blargg,mooneye,acid2,sound}/`, `package/Harness.roc`, `flake.nix`, README; deletions listed above; `example/` shrinks to `cartridge.roc` + `debug.roc`.
+- Verification: `check-blargg` (12 cpu_instrs + instr_timing gate, mem_timing informative), `check-mooneye` (6 gate), `check-acid2` and `check-sound` digests unchanged, 204+ package tests (Harness expects move with the code), both apps build.
+- Risk: protocol code moves (not rewritten) into `Harness.roc`; the gating set is copied verbatim from `golden/ladder.passlist`; hashes pinned at authoring time via `nix store prefetch-file`.
