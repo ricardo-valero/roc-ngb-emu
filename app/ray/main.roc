@@ -5,17 +5,17 @@
 # Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select,
 # Esc exits.
 app [Model, program] {
-    rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.9.0/3sKTYuHvxSV77dDyZrxuUYgfrAarL6ZtasWMPeH32udh.tar.zst",
-    ngb: "../package/main.roc",
+    ray: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.9.0/3sKTYuHvxSV77dDyZrxuUYgfrAarL6ZtasWMPeH32udh.tar.zst",
+    ngb: "../../package/main.roc",
 }
 
-import rr.App
-import rr.Assets
-import rr.Color
-import rr.Draw
-import rr.Host
+import ray.App
+import ray.Assets
+import ray.Color
+import ray.Draw
+import ray.Host
 import ngb.GameBoy
-import "../rom/play.gb" as rom : List(U8)
+import "../../rom/play.gb" as rom : List(U8)
 
 # GameBoy is boxed: passing the large nested record itself through the
 # host's model round-trip crashes in the platform's refcount walk
