@@ -38,7 +38,7 @@ in
     name = "check-sound";
     runtimeInputs = [coreutils roc];
     text = ''
-      if [ ! -f checks/sound/main.roc ]; then
+      if [ ! -f checks/run.roc ]; then
         echo "check-sound: run from the repo root" >&2
         exit 2
       fi
@@ -47,7 +47,7 @@ in
       gate_fail=0
       promote=()
       while IFS="|" read -r name path; do
-        if out="$(roc run checks/sound/main.roc -- "$path" 2>&1)"; then
+        if out="$(roc run checks/run.roc -- "$path" 2>&1)"; then
           result=pass
         else
           result=fail

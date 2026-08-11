@@ -27,7 +27,7 @@ in
     name = "check-mooneye";
     runtimeInputs = [coreutils roc];
     text = ''
-      if [ ! -f checks/mooneye/main.roc ]; then
+      if [ ! -f checks/run.roc ]; then
         echo "check-mooneye: run from the repo root" >&2
         exit 2
       fi
@@ -36,7 +36,7 @@ in
       promote=()
       for path in ${roms}/*.gb; do
         name="$(basename "$path")"
-        if out="$(roc run checks/mooneye/main.roc -- "$path" 2>&1)"; then
+        if out="$(roc run checks/run.roc -- "$path" 2>&1)"; then
           result=pass
         else
           result=fail

@@ -41,7 +41,7 @@ in
     name = "check-blargg";
     runtimeInputs = [coreutils roc];
     text = ''
-      if [ ! -f checks/blargg/main.roc ]; then
+      if [ ! -f checks/run.roc ]; then
         echo "check-blargg: run from the repo root" >&2
         exit 2
       fi
@@ -49,7 +49,7 @@ in
       gate_fail=0
       promote=()
       while IFS="|" read -r name path; do
-        if out="$(roc run checks/blargg/main.roc -- "$path" 2>&1)"; then
+        if out="$(roc run checks/run.roc -- "$path" 2>&1)"; then
           result=pass
         else
           result=fail
