@@ -40,7 +40,7 @@ check! = |rom_path| {
     wav = render_wav(rom_path.read_bytes!()?, 180)
     actual = Sha256.hex(wav)
     golden_path = Path.utf8("check/sound/golden.sha256")
-    golden_bytes = golden_path.read_bytes!() ?? List.repeat(0x00.U8, 0)
+    golden_bytes = read_or_empty!(golden_path)
     if is_empty(golden_bytes) {
         golden_path.write_bytes!("${actual}\n".to_utf8())?
         Path.utf8("check/sound/golden.wav").write_bytes!(wav)?
@@ -148,3 +148,9 @@ parse_u64 = |os_str|
         } else {
             acc
         })
+
+# Indirection on purpose: the flow analyzer constant-folds a `?? fallback`
+# on an effectful call at the use site and emits a spurious warning that
+# fails `roc build`; behind an effectful helper it does not.
+read_or_empty! : Path => List(U8)
+read_or_empty! = |path| path.read_bytes!() ?? List.repeat(0x00.U8, 0)

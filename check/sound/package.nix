@@ -12,6 +12,9 @@ in
     name = "check-sound";
     runtimeInputs = [roc];
     text = ''
-      roc run check/sound/main.roc -- --check "${gb-test-roms}/dmg_sound/rom_singles/01-registers.gb"
+      runner="$(mktemp -t roc-sound-XXXXXX)"
+      roc build check/sound/main.roc --output="$runner" >/dev/null
+      "$runner" --check "${gb-test-roms}/dmg_sound/rom_singles/01-registers.gb"
+      rm -f "$runner"
     '';
   }

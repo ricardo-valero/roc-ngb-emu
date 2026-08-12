@@ -26,6 +26,9 @@ in
     name = "check-mooneye";
     runtimeInputs = [roc];
     text = ''
-      roc run check/run.roc -- check/mooneye/passlist "${roms}"/*.gb
+      runner="$(mktemp -t roc-runner-XXXXXX)"
+      roc build check/run.roc --output="$runner" >/dev/null
+      "$runner" check/mooneye/passlist "${roms}"/*.gb
+      rm -f "$runner"
     '';
   }

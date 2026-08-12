@@ -15,6 +15,9 @@ in
     name = "check-acid2";
     runtimeInputs = [roc];
     text = ''
-      roc run check/acid2/main.roc -- --check "${rom}"
+      runner="$(mktemp -t roc-acid2-XXXXXX)"
+      roc build check/acid2/main.roc --output="$runner" >/dev/null
+      "$runner" --check "${rom}"
+      rm -f "$runner"
     '';
   }
