@@ -1,6 +1,8 @@
 // WebGPU backend: per-frame writeTexture + fullscreen triangle, nearest
 // sampling. Two-method seam shared by all backends: uploadTexture/renderTexture.
-export async function create(canvas, w, h) {
+// correction 1 applies the CGB LCD curve (near's matrix, rows sum to 32 so
+// grays pass through unchanged) in the fragment shader.
+export async function create(canvas, w, h, correction = 0) {
   const adapter = await navigator.gpu?.requestAdapter();
   if (!adapter) throw new Error('no WebGPU adapter');
   const device = await adapter.requestDevice();
@@ -26,7 +28,15 @@ export async function create(canvas, w, h) {
     @group(0) @binding(0) var samp: sampler;
     @group(0) @binding(1) var tex: texture_2d<f32>;
     @fragment fn fs(in: VSOut) -> @location(0) vec4f {
-      return textureSample(tex, samp, in.uv);
+      ${correction === 1 ? `
+      let c = textureSample(tex, samp, in.uv).rgb;
+      let corrected = vec3f(
+        dot(c, vec3f(26.0, 4.0, 2.0)),
+        dot(c, vec3f(0.0, 24.0, 8.0)),
+        dot(c, vec3f(2.0, 4.0, 26.0)),
+      ) / 32.0;
+      return vec4f(corrected, 1.0);` : `
+      return textureSample(tex, samp, in.uv);`}
     }`});
   const pipeline = device.createRenderPipeline({
     layout: 'auto',

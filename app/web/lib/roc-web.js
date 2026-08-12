@@ -11,13 +11,13 @@ import { createAudio } from './audio.js';
 
 const BACKENDS = { 1: 'webgpu', 2: 'webgl', 3: 'canvas2d' };
 
-async function createRenderer(code, canvas, w, h) {
+async function createRenderer(code, canvas, w, h, correction) {
   const order = code === 0 ? [1, 2, 3] : [code];
   const errors = [];
   for (const c of order) {
     try {
       const mod = await import(`./renderer/${BACKENDS[c]}.js`);
-      return { renderer: await mod.create(canvas, w, h), name: BACKENDS[c] };
+      return { renderer: await mod.create(canvas, w, h, correction), name: BACKENDS[c] };
     } catch (e) {
       errors.push(`${BACKENDS[c]}: ${e.message}`);
     }
@@ -67,7 +67,8 @@ async function run(wasmUrl, opts, status, canvas) {
   canvas.style.height = `${h * scale}px`;
   canvas.style.imageRendering = 'pixelated';
 
-  const { renderer, name: backend } = await createRenderer(x.config_renderer(), canvas, w, h);
+  const correction = x.config_correction ? x.config_correction() : 0;
+  const { renderer, name: backend } = await createRenderer(x.config_renderer(), canvas, w, h, correction);
 
   // Input
   const getKeys = attachKeys();

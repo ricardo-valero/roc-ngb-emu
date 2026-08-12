@@ -3,7 +3,7 @@
 # file onto the page (or use the picker) to swap games — no rebuild.
 # Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select.
 app [Model, program] {
-    web: platform "https://github.com/ricardo-valero/roc-web/releases/download/v0.2.0/8P65Tbg3xjD6MpJx33quQKJES9SkV9aRGRn59juib6sz.tar.zst",
+    web: platform "https://github.com/ricardo-valero/roc-web/releases/download/v0.3.0/4FxpZ7r4sKg5TJ7f8ZoNgWgwfNPzfhHL1Xgvz7k72xvu.tar.zst",
     ngb: "../../package/main.roc",
 }
 
@@ -20,7 +20,9 @@ init = App.init(
         .with_title("roc-ngb-emu")
         .with_screen({ width: 160, height: 144 })
         .with_scale(4)
-        .with_renderer(Auto),
+        .with_renderer(Auto)
+        # CGB LCD curve; grays are fixed points, so DMG output is untouched
+        .with_color_correction(Cgb),
     |rom| { gb: Box.box(GameBoy.init(rom)), frames: 0 },
 )
 

@@ -1,6 +1,8 @@
 // WebGL2 backend: texSubImage2D upload + fullscreen quad, nearest filtering
 // (binjgb's pattern; NPOT textures are fine in WebGL2).
-export function create(canvas, w, h) {
+// correction 1 applies the CGB LCD curve (near's matrix, rows sum to 32 so
+// grays pass through unchanged) in the fragment shader.
+export function create(canvas, w, h, correction = 0) {
   const gl = canvas.getContext('webgl2');
   if (!gl) throw new Error('no WebGL2 context');
 
@@ -16,7 +18,14 @@ export function create(canvas, w, h) {
     uniform sampler2D tex;
     in vec2 uv;
     out vec4 color;
-    void main() { color = texture(tex, uv); }`;
+    void main() {${correction === 1 ? `
+      vec3 c = texture(tex, uv).rgb;
+      color = vec4(vec3(
+        dot(c, vec3(26.0, 4.0, 2.0)),
+        dot(c, vec3(0.0, 24.0, 8.0)),
+        dot(c, vec3(2.0, 4.0, 26.0))
+      ) / 32.0, 1.0);` : ` color = texture(tex, uv);`}
+    }`;
 
   const compile = (type, src) => {
     const s = gl.createShader(type);
