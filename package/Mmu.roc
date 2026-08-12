@@ -10,7 +10,7 @@ Mmu := {
     div_counter : U64,
     tima_counter : U64,
     buttons : { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool },
-    apu_events : List(U8), # channel triggers (0-3) and power-off (0xF0), drained by the APU
+    apu_events : List(U8), # register-write events (address low byte), power off/on (0xF0/0xF1), drained by the APU
     samples : List(F32), # APU output ring (preallocated: append-in-spread clones, set does not)
     sample_count : U64, # write index into the ring
     model : [Dmg, Cgb], # console model, from the header CGB flag (0x0143).
@@ -460,6 +460,19 @@ Mmu := {
     apu_powered : Mmu -> Bool
     apu_powered = |mmu| (mmu.mem.get(0xFF26) ?? 0x00).bitwise_and(0x80) != 0x00
 
+    # Registers whose writes have side effects the APU must apply at write
+    # time: NR10 (sweep negate quirk), NRx1 (length reload), NRx2/NR30 (DAC
+    # gate), NRx4 (trigger and length-enable edge clocking)
+    apu_reg_event : U16 -> Bool
+    apu_reg_event = |addr|
+        match addr {
+            0xFF10 | 0xFF11 | 0xFF12 | 0xFF14 => Bool.True
+            0xFF16 | 0xFF17 | 0xFF19 => Bool.True
+            0xFF1A | 0xFF1B | 0xFF1E => Bool.True
+            0xFF20 | 0xFF21 | 0xFF23 => Bool.True
+            _ => Bool.False
+        }
+
     push_sample_pair : Mmu, F32, F32 -> Mmu
     push_sample_pair = |mmu, left, right| {
         c = mmu.sample_count
@@ -500,18 +513,20 @@ Mmu := {
         } else if addr >= 0xFF10 and addr <= 0xFF25 {
             if apu_powered(mmu) {
                 written = mmu.poke(addr, value)
-                # NRx4 bit 7 is a channel trigger event
-                if value.bitwise_and(0x80) != 0x00 {
-                    match addr {
-                        0xFF14 => { ..written, apu_events: written.apu_events.append(0) }
-                        0xFF19 => { ..written, apu_events: written.apu_events.append(1) }
-                        0xFF1E => { ..written, apu_events: written.apu_events.append(2) }
-                        0xFF23 => { ..written, apu_events: written.apu_events.append(3) }
-                        _ => written
-                    }
+                if apu_reg_event(addr) {
+                    { ..written, apu_events: written.apu_events.append(addr.to_u8_wrap()) }
                 } else {
                     written
                 }
+            } else if is_cgb(mmu) {
+                mmu # CGB: power off gates the whole register file
+            } else if addr == 0xFF11 or addr == 0xFF16 or addr == 0xFF20 {
+                # DMG: length counters load even while powered off (duty bits stay 0)
+                m = mmu.poke(addr, value.bitwise_and(0x3F))
+                { ..m, apu_events: m.apu_events.append(addr.to_u8_wrap()) }
+            } else if addr == 0xFF1B {
+                m = mmu.poke(addr, value)
+                { ..m, apu_events: m.apu_events.append(addr.to_u8_wrap()) }
             } else {
                 mmu # power off gates the register file
             }
@@ -526,7 +541,9 @@ Mmu := {
                 }
                 { ..m, apu_events: m.apu_events.append(0xF0) }
             } else {
-                mmu.poke(0xFF26, (mmu.mem.get(0xFF26) ?? 0x00).bitwise_and(0x0F).bitwise_or(0x80))
+                was_off = (mmu.mem.get(0xFF26) ?? 0x00).bitwise_and(0x80) == 0x00
+                m = mmu.poke(0xFF26, (mmu.mem.get(0xFF26) ?? 0x00).bitwise_and(0x0F).bitwise_or(0x80))
+                if was_off { { ..m, apu_events: m.apu_events.append(0xF1) } } else { m }
             }
         } else if addr >= 0x8000 and addr < 0xA000 and is_cgb(mmu) and mmu.vbk == 1 {
             { ..mmu, vram1: mmu.vram1.set(addr.to_u64().minus(0x8000), value) ?? mmu.vram1 }
@@ -831,12 +848,25 @@ expect {
 }
 expect Mmu.init(test_rom).write(0xFF26, 0x00).write(0xFF26, 0x80).read(0xFF26) == 0xF0
 
-# Trigger writes reach the event queue; gated while off
+# Register writes reach the event queue as address low bytes; NRx4 gated while off
 expect {
     r = Mmu.init(test_rom).write(0xFF19, 0x87).take_apu_events()
-    r.events == [1] and r.mmu.take_apu_events().events == []
+    r.events == [0x19] and r.mmu.take_apu_events().events == []
 }
 expect Mmu.init(test_rom).write(0xFF26, 0x00).write(0xFF19, 0x87).apu_events == [0xF0]
+
+# Power-on emits its own event; a redundant on-write does not
+expect {
+    m = Mmu.init(test_rom).write(0xFF26, 0x00).write(0xFF26, 0x80)
+    m.apu_events == [0xF0, 0xF1] and m.write(0xFF26, 0x80).apu_events == [0xF0, 0xF1]
+}
+
+# DMG: length registers load while powered off (duty bits stay 0); CGB gates them
+expect {
+    m = Mmu.init(test_rom).write(0xFF26, 0x00).write(0xFF16, 0xFA)
+    m.apu_events == [0xF0, 0x16] and m.read_raw(0xFF16) == 0x3A
+}
+expect Mmu.init(set_byte(test_rom, 0x0143, 0x80)).write(0xFF26, 0x00).write(0xFF16, 0xFA).apu_events == [0xF0]
 
 # --- CGB memory infrastructure ---
 
