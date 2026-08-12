@@ -12,5 +12,11 @@ cpu_instrs.gb
 11-op a,(hl).gb
 instr_timing.gb
 01-registers.gb
+02-len ctr.gb
+03-trigger.gb
 04-sweep.gb
+05-sweep details.gb
 06-overflow on trigger.gb
+07-len sweep period sync.gb
+08-len ctr during power.gb
+11-regs after power.gb

@@ -19,6 +19,8 @@ Channel : {
     sweep_enabled : Bool,
     wave_pos : U8,
     lfsr : U16,
+    len_en : Bool, # last seen NRx4 length-enable, for edge-clock detection
+    sweep_neg_used : Bool, # a sweep calc used negate mode since the last trigger
 }
 
 Apu := {
@@ -44,6 +46,8 @@ Apu := {
         sweep_enabled: Bool.False,
         wave_pos: 0,
         lfsr: 0x7FFF,
+        len_en: Bool.False,
+        sweep_neg_used: Bool.False,
     }
 
     init : {} -> Apu
@@ -56,7 +60,7 @@ Apu := {
             ch4: blank({}),
             pending: 0,
             fs_timer: 0,
-            fs_step: 0,
+            fs_step: 7, # so the first step to fire is 0, as after power-on
             sample_acc: 0,
         }
         apu
@@ -67,26 +71,43 @@ Apu := {
     # is ~87 cycles away) — per-instruction the cost is one compare.
     tick : Apu, Mmu, U64 -> { apu : Apu, mmu : Mmu }
     tick = |apu, mmu, cycles| {
-        total = apu.pending.plus(cycles)
-        if mmu.apu_events.len() > 0 or total >= 128 {
-            advance({ ..apu, pending: 0 }, mmu, total)
+        if mmu.apu_events.len() > 0 {
+            # the writes happened during this step: advance the batched time
+            # first so the quirks observe the frame sequencer as of the write
+            pre = advance({ ..apu, pending: 0 }, mmu, apu.pending)
+            applied = apply_events(pre.apu, pre.mmu)
+            advance(applied.apu, applied.mmu, cycles)
         } else {
-            { apu: { ..apu, pending: total }, mmu: mmu }
+            total = apu.pending.plus(cycles)
+            # flush when the batch crosses a frame-sequencer step so NR52
+            # status updates within an instruction of a length clock — test
+            # ROMs poll NR52 to sync against the sequencer phase
+            if total >= 128 or apu.fs_timer.plus(total) >= 8192 {
+                advance({ ..apu, pending: 0 }, mmu, total)
+            } else {
+                { apu: { ..apu, pending: total }, mmu: mmu }
+            }
         }
     }
 
-    advance : Apu, Mmu, U64 -> { apu : Apu, mmu : Mmu }
-    advance = |apu0, mmu0, cycles| {
+    apply_events : Apu, Mmu -> { apu : Apu, mmu : Mmu }
+    apply_events = |apu0, mmu0| {
         drained = mmu0.take_apu_events()
         events = drained.events
-        var mmu = drained.mmu # last use of `drained`: the bus stays uniquely owned
+        mmu = drained.mmu # last use of `drained`: the bus stays uniquely owned
         var apu = apu0
-
         var i = 0
         while i < events.len() {
             apu = handle_event(apu, mmu, events.get(i) ?? 0xFF)
             i = i.plus(1)
         }
+        { apu: apu, mmu: mmu }
+    }
+
+    advance : Apu, Mmu, U64 -> { apu : Apu, mmu : Mmu }
+    advance = |apu0, mmu0, cycles| {
+        var mmu = mmu0
+        var apu = apu0
 
         # waveform timers
         apu = { ..apu,
@@ -155,35 +176,138 @@ Apu := {
 
     # --- events ---
 
+    # Events are the low byte of the written register's address (see
+    # Mmu.apu_reg_event), plus 0xF0/0xF1 for power off/on
     handle_event : Apu, Mmu, U8 -> Apu
     handle_event = |apu, mmu, event|
         match event {
-            0 => { ..apu, ch1: trigger_ch1(apu.ch1, mmu) }
-            1 => { ..apu, ch2: trigger_pulse(apu.ch2, mmu, 0xFF16, 0xFF17, pulse_period(mmu, 0xFF18, 0xFF19)) }
-            2 => { ..apu, ch3: trigger_wave(apu.ch3, mmu) }
-            3 => { ..apu, ch4: trigger_noise(apu.ch4, mmu) }
-            _ => { ..apu, ch1: blank({}), ch2: blank({}), ch3: blank({}), ch4: blank({}) } # power off
+            0x10 => { ..apu, ch1: nr10_gate(apu.ch1, mmu) }
+            0x11 => { ..apu, ch1: { ..apu.ch1, length: len64(mmu, 0xFF11) } }
+            0x12 => { ..apu, ch1: dac_gate(apu.ch1, dac_on(mmu, 0xFF12)) }
+            0x14 => { ..apu, ch1: nrx4(apu, apu.ch1, mmu, 0xFF14, 64, Ch1) }
+            0x16 => { ..apu, ch2: { ..apu.ch2, length: len64(mmu, 0xFF16) } }
+            0x17 => { ..apu, ch2: dac_gate(apu.ch2, dac_on(mmu, 0xFF17)) }
+            0x19 => { ..apu, ch2: nrx4(apu, apu.ch2, mmu, 0xFF19, 64, Ch2) }
+            0x1A => { ..apu, ch3: dac_gate(apu.ch3, wave_dac_on(mmu)) }
+            0x1B => { ..apu, ch3: { ..apu.ch3, length: U16.minus(256, mmu.read_raw(0xFF1B).to_u16()) } }
+            0x1E => { ..apu, ch3: nrx4(apu, apu.ch3, mmu, 0xFF1E, 256, Wave) }
+            0x20 => { ..apu, ch4: { ..apu.ch4, length: len64(mmu, 0xFF20) } }
+            0x21 => { ..apu, ch4: dac_gate(apu.ch4, dac_on(mmu, 0xFF21)) }
+            0x23 => { ..apu, ch4: nrx4(apu, apu.ch4, mmu, 0xFF23, 64, Noise) }
+            0xF0 => power_off(apu, mmu)
+            0xF1 => power_on(apu)
+            _ => apu
         }
 
     dac_on : Mmu, U16 -> Bool
     dac_on = |mmu, nrx2| mmu.read_raw(nrx2).bitwise_and(0xF8) != 0x00
 
-    trigger_pulse : Channel, Mmu, U16, U16, U64 -> Channel
-    trigger_pulse = |ch, mmu, nrx1, nrx2, period| {
+    wave_dac_on : Mmu -> Bool
+    wave_dac_on = |mmu| mmu.read_raw(0xFF1A).bitwise_and(0x80) != 0x00
+
+    # NRx1: the length counter loads at write time, playing or not
+    len64 : Mmu, U16 -> U16
+    len64 = |mmu, nrx1| U16.minus(64, mmu.read_raw(nrx1).bitwise_and(0x3F).to_u16())
+
+    # NRx2/NR30: turning the DAC off silences the channel immediately
+    dac_gate : Channel, Bool -> Channel
+    dac_gate = |ch, on| if on { ch } else { { ..ch, enabled: Bool.False } }
+
+    # NR10: clearing negate after a negate-mode calculation kills CH1
+    nr10_gate : Channel, Mmu -> Channel
+    nr10_gate = |ch, mmu|
+        if mmu.read_raw(0xFF10).bitwise_and(0x08) == 0x00 and ch.sweep_neg_used {
+            { ..ch, enabled: Bool.False }
+        } else {
+            ch
+        }
+
+    # The next frame-sequencer step won't clock lengths (fs_step holds the
+    # step that fired last; lengths clock on even steps)
+    first_half : Apu -> Bool
+    first_half = |apu| apu.fs_step.bitwise_and(0x01) == 0x00
+
+    # NRx4 write: length-enable edge clocking, then trigger on bit 7. A
+    # trigger only reloads an expired counter — to max, or max-1 when
+    # enabling in the first half of the length period.
+    nrx4 : Apu, Channel, Mmu, U16, U16, [Ch1, Ch2, Wave, Noise] -> Channel
+    nrx4 = |apu, ch0, mmu, addr, max_len, which| {
+        v = mmu.read_raw(addr)
+        new_en = v.bitwise_and(0x40) != 0x00
+        trigger = v.bitwise_and(0x80) != 0x00
+        fh = first_half(apu)
+        edge =
+            if new_en and ch0.len_en == Bool.False and fh and ch0.length > 0 {
+                rem = ch0.length.minus(1)
+                if rem == 0 and trigger == Bool.False {
+                    { ..ch0, length: 0, enabled: Bool.False }
+                } else {
+                    { ..ch0, length: rem }
+                }
+            } else {
+                ch0
+            }
+        done =
+            if trigger {
+                t =
+                    match which {
+                        Ch1 => trigger_ch1(edge, mmu)
+                        Ch2 => trigger_ch2(edge, mmu)
+                        Wave => trigger_wave(edge, mmu)
+                        Noise => trigger_noise(edge, mmu)
+                    }
+                if t.length == 0 {
+                    { ..t, length: if new_en and fh { max_len.minus(1) } else { max_len } }
+                } else {
+                    t
+                }
+            } else {
+                edge
+            }
+        { ..done, len_en: new_en }
+    }
+
+    # Power off clears channel state; on DMG the length counters survive
+    power_off : Apu, Mmu -> Apu
+    power_off = |apu, mmu|
+        if mmu.is_cgb() {
+            { ..apu, ch1: blank({}), ch2: blank({}), ch3: blank({}), ch4: blank({}) }
+        } else {
+            { ..apu,
+                ch1: { ..blank({}), length: apu.ch1.length },
+                ch2: { ..blank({}), length: apu.ch2.length },
+                ch3: { ..blank({}), length: apu.ch3.length },
+                ch4: { ..blank({}), length: apu.ch4.length },
+            }
+        }
+
+    # Power on restarts the frame sequencer at step 0 and rewinds waveforms
+    power_on : Apu -> Apu
+    power_on = |apu| { ..apu,
+        fs_step: 7,
+        fs_timer: 0,
+        ch1: { ..apu.ch1, duty_pos: 0 },
+        ch2: { ..apu.ch2, duty_pos: 0 },
+        ch3: { ..apu.ch3, wave_pos: 0 },
+    }
+
+    trigger_pulse : Channel, Mmu, U16, U64 -> Channel
+    trigger_pulse = |ch, mmu, nrx2, period| {
         env = mmu.read_raw(nrx2)
-        len = U16.minus(64, mmu.read_raw(nrx1).bitwise_and(0x3F).to_u16())
         { ..ch,
             enabled: dac_on(mmu, nrx2),
-            length: if len == 0 { 64 } else { len },
             timer: period,
             volume: env.shr_zf_wrap(4),
             env_timer: env.bitwise_and(0x07),
         }
     }
 
+    trigger_ch2 : Channel, Mmu -> Channel
+    trigger_ch2 = |ch, mmu| trigger_pulse(ch, mmu, 0xFF17, pulse_period(mmu, 0xFF18, 0xFF19))
+
     trigger_ch1 : Channel, Mmu -> Channel
     trigger_ch1 = |ch0, mmu| {
-        ch = trigger_pulse(ch0, mmu, 0xFF11, 0xFF12, pulse_period(mmu, 0xFF13, 0xFF14))
+        ch = trigger_pulse(ch0, mmu, 0xFF12, pulse_period(mmu, 0xFF13, 0xFF14))
         nr10 = mmu.read_raw(0xFF10)
         period = nr10.shr_zf_wrap(4).bitwise_and(0x07)
         shift = nr10.bitwise_and(0x07)
@@ -192,33 +316,33 @@ Apu := {
             sweep_shadow: shadow,
             sweep_timer: if period == 0 { 8 } else { period },
             sweep_enabled: period != 0 or shift != 0,
+            sweep_neg_used: Bool.False,
         }
-        # immediate overflow check when a shift is set
-        if shift != 0 and sweep_next(armed.sweep_shadow, nr10) > 2047 {
-            { ..armed, enabled: Bool.False }
+        # immediate calculation when a shift is set (counts for the negate quirk)
+        if shift != 0 {
+            calc = { ..armed, sweep_neg_used: nr10.bitwise_and(0x08) != 0x00 }
+            if sweep_next(calc.sweep_shadow, nr10) > 2047 {
+                { ..calc, enabled: Bool.False }
+            } else {
+                calc
+            }
         } else {
             armed
         }
     }
 
     trigger_wave : Channel, Mmu -> Channel
-    trigger_wave = |ch, mmu| {
-        len = U16.minus(256, mmu.read_raw(0xFF1B).to_u16())
-        { ..ch,
-            enabled: mmu.read_raw(0xFF1A).bitwise_and(0x80) != 0x00,
-            length: if len == 0 { 256 } else { len },
-            timer: wave_period(mmu),
-            wave_pos: 0,
-        }
+    trigger_wave = |ch, mmu| { ..ch,
+        enabled: wave_dac_on(mmu),
+        timer: wave_period(mmu),
+        wave_pos: 0,
     }
 
     trigger_noise : Channel, Mmu -> Channel
     trigger_noise = |ch, mmu| {
         env = mmu.read_raw(0xFF21)
-        len = U16.minus(64, mmu.read_raw(0xFF20).bitwise_and(0x3F).to_u16())
         { ..ch,
             enabled: dac_on(mmu, 0xFF21),
-            length: if len == 0 { 64 } else { len },
             timer: noise_period(mmu),
             volume: env.shr_zf_wrap(4),
             env_timer: env.bitwise_and(0x07),
@@ -301,7 +425,7 @@ Apu := {
     # --- frame sequencer clocks ---
 
     length_enabled : Mmu, U16 -> Bool
-    length_enabled = |mmu, nrx4| mmu.read_raw(nrx4).bitwise_and(0x40) != 0x00
+    length_enabled = |mmu, addr| mmu.read_raw(addr).bitwise_and(0x40) != 0x00
 
     clock_length : Channel, Bool -> Channel
     clock_length = |ch, enable|
@@ -371,21 +495,23 @@ Apu := {
         } else {
             reloaded = { ..ch, sweep_timer: if period == 0 { 8 } else { period } }
             if reloaded.sweep_enabled and period != 0 {
-                next = sweep_next(reloaded.sweep_shadow, nr10)
+                # any calculation in negate mode arms the NR10 negate-clear quirk
+                calc = { ..reloaded, sweep_neg_used: reloaded.sweep_neg_used or nr10.bitwise_and(0x08) != 0x00 }
+                next = sweep_next(calc.sweep_shadow, nr10)
                 if next > 2047 {
-                    { apu: { ..apu, ch1: { ..reloaded, enabled: Bool.False } }, mmu: mmu }
+                    { apu: { ..apu, ch1: { ..calc, enabled: Bool.False } }, mmu: mmu }
                 } else if shift != 0 {
                     mmu2 = mmu
                         .poke(0xFF13, next.to_u8_wrap())
                         .poke(0xFF14, mmu.read_raw(0xFF14).bitwise_and(0xF8).bitwise_or(next.shr_zf_wrap(8).to_u8_wrap()))
-                    updated = { ..reloaded, sweep_shadow: next }
+                    updated = { ..calc, sweep_shadow: next }
                     if sweep_next(next, nr10) > 2047 {
                         { apu: { ..apu, ch1: { ..updated, enabled: Bool.False } }, mmu: mmu2 }
                     } else {
                         { apu: { ..apu, ch1: updated }, mmu: mmu2 }
                     }
                 } else {
-                    { apu: { ..apu, ch1: reloaded }, mmu: mmu }
+                    { apu: { ..apu, ch1: calc }, mmu: mmu }
                 }
             } else {
                 { apu: { ..apu, ch1: reloaded }, mmu: mmu }
@@ -590,4 +716,81 @@ expect {
     r = f.apu.tick(m, 4)
     off = r.apu.tick(r.mmu.write(0xFF26, 0x00), 4)
     r.apu.ch2.enabled == Bool.True and off.apu.ch2.enabled == Bool.False
+}
+
+# NRx1 reloads the length counter mid-note: a rewritten short length expires
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF17, 0xF0).write(0xFF19, 0xC0) # trigger with length enabled: counter 64
+    r = f.apu.tick(m, 4)
+    r2 = r.apu.tick(r.mmu.write(0xFF16, 0x3F), 4) # rewrite mid-note: counter 1
+    after = r2.apu.tick(r2.mmu, 16384)
+    r2.mmu.read_raw(0xFF26).bitwise_and(0x02) == 0x02
+    and after.mmu.read_raw(0xFF26).bitwise_and(0x02) == 0x00
+}
+
+# Turning the DAC off silences the channel without waiting for a length clock
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF17, 0xF0).write(0xFF19, 0x80)
+    r = f.apu.tick(m, 4)
+    off = r.apu.tick(r.mmu.write(0xFF17, 0x00), 4)
+    r.mmu.read_raw(0xFF26).bitwise_and(0x02) == 0x02
+    and off.mmu.read_raw(0xFF26).bitwise_and(0x02) == 0x00
+}
+
+# Clearing sweep negate after a negate-mode calculation disables CH1
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF10, 0x09).write(0xFF12, 0xF0).write(0xFF13, 0x40).write(0xFF14, 0x84)
+    r = f.apu.tick(m, 4) # trigger runs an immediate negate-mode calculation
+    cleared = r.apu.tick(r.mmu.write(0xFF10, 0x01), 4)
+    r.apu.ch1.enabled == Bool.True and cleared.apu.ch1.enabled == Bool.False
+}
+
+# Enabling length in the first half of the length period clocks it once
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF16, 0x3E).write(0xFF17, 0xF0).write(0xFF19, 0x80) # counter 2, no length enable
+    r = f.apu.tick(m, 4)
+    synced = r.apu.tick(r.mmu, 8192) # step 0 fires: next step won't clock lengths
+    en = synced.apu.tick(synced.mmu.write(0xFF19, 0x40), 4) # enable without trigger
+    synced.apu.ch2.length == 2 and en.apu.ch2.length == 1
+}
+
+# A first-half trigger reloads an expired counter to max-1
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF17, 0xF0)
+    r = f.apu.tick(m, 4)
+    synced = r.apu.tick(r.mmu, 8192) # step 0 fires
+    trig = synced.apu.tick(synced.mmu.write(0xFF19, 0xC0), 4)
+    trig.apu.ch2.length == 63
+}
+
+# DMG: length counters survive a power cycle
+expect {
+    f = fresh({})
+    m = f.mmu.write(0xFF16, 0x30).write(0xFF17, 0xF0).write(0xFF19, 0x80) # counter 16
+    r = f.apu.tick(m, 4)
+    off = r.apu.tick(r.mmu.write(0xFF26, 0x00), 4)
+    on = off.apu.tick(off.mmu.write(0xFF26, 0x80), 4)
+    on.apu.ch2.length == 16
+}
+
+# CGB: power off clears length counters
+expect {
+    m0 = Mmu.init(test_rom.set(0x0143, 0x80) ?? test_rom)
+    m = m0.write(0xFF16, 0x30).write(0xFF17, 0xF0).write(0xFF19, 0x80)
+    r = Apu.init({}).tick(m, 4)
+    off = r.apu.tick(r.mmu.write(0xFF26, 0x00), 4)
+    r.apu.ch2.length == 16 and off.apu.ch2.length == 0
+}
+
+# Power-on restarts the frame sequencer at step 0
+expect {
+    f = fresh({})
+    r = f.apu.tick(f.mmu, 12288) # one step fired, timer mid-flight
+    cycled = r.apu.tick(r.mmu.write(0xFF26, 0x00).write(0xFF26, 0x80), 4)
+    cycled.apu.fs_step == 7 and cycled.apu.fs_timer <= 8
 }
