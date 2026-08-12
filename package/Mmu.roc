@@ -201,6 +201,11 @@ Mmu := {
             mmu.mem.get(addr.to_u64()) ?? 0xFF
         }
 
+    # "Does this machine have the color hardware?" — the question every
+    # CGB gate actually asks. Kept as a predicate (rather than inlining
+    # `mmu.model == Cgb` everywhere) so growing the model family changes
+    # one line: Mgb/Sgb would join the DMG side, an AGB the color side.
+    # (Cross-module field access works fine; this is not an access shim.)
     is_cgb : Mmu -> Bool
     is_cgb = |mmu| mmu.model == Cgb
 
