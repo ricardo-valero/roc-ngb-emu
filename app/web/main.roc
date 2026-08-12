@@ -43,24 +43,24 @@ render! = |model, host| {
     Box.box(drained.gb)
 }
 
-# DMG shades (0..3) to RGBA8 grayscale
-rgba : List(U8) -> List(U8)
-rgba = |shades| {
+# RGB555 framebuffer to RGBA8 (5-bit channels expanded to 8)
+rgba : List(U16) -> List(U8)
+rgba = |pixels| {
     var out = List.repeat(255.U8, 92160)
     var i = 0.U64
     while i < 23040 {
-        gray =
-            match shades.get(i) ?? 0 {
-                0 => 255.U8
-                1 => 170
-                2 => 85
-                _ => 0
-            }
+        px = pixels.get(i) ?? 0
         j = i * 4
-        out = out.set(j, gray) ?? out
-        out = out.set(j + 1, gray) ?? out
-        out = out.set(j + 2, gray) ?? out
+        out = out.set(j, expand5(px.shr_zf_wrap(10))) ?? out
+        out = out.set(j + 1, expand5(px.shr_zf_wrap(5))) ?? out
+        out = out.set(j + 2, expand5(px)) ?? out
         i = i + 1
     }
     out
+}
+
+expand5 : U16 -> U8
+expand5 = |v| {
+    c = v.bitwise_and(0x1F).to_u8_wrap()
+    c.shl_wrap(3).bitwise_or(c.shr_zf_wrap(2))
 }

@@ -82,12 +82,17 @@ render! = |model, host, frame| {
     Ok({ ..model, gb: Box.box(gb) })
 }
 
-# The classic DMG green LCD, light to dark
-shade_color : U8 -> Color
-shade_color = |shade|
-    match shade {
-        0 => Color.from_hex_rgb(0x9BBC0F)
-        1 => Color.from_hex_rgb(0x8BAC0F)
-        2 => Color.from_hex_rgb(0x306230)
-        _ => Color.from_hex_rgb(0x0F380F)
-    }
+# RGB555 framebuffer pixel to screen color (5-bit channels expanded to 8)
+shade_color : U16 -> Color
+shade_color = |px| {
+    r = expand5(px.shr_zf_wrap(10)).to_u32()
+    g = expand5(px.shr_zf_wrap(5)).to_u32()
+    b = expand5(px).to_u32()
+    Color.from_hex_rgb(r.shl_wrap(16).bitwise_or(g.shl_wrap(8)).bitwise_or(b))
+}
+
+expand5 : U16 -> U8
+expand5 = |v| {
+    c = v.bitwise_and(0x1F).to_u8_wrap()
+    c.shl_wrap(3).bitwise_or(c.shr_zf_wrap(2))
+}

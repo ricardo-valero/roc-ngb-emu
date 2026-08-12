@@ -180,6 +180,17 @@ Mmu := {
     is_cgb : Mmu -> Bool
     is_cgb = |mmu| mmu.model == Cgb
 
+    # Palette RAM bytes for the PPU's color lookups
+    bg_pal_byte : Mmu, U64 -> U8
+    bg_pal_byte = |mmu, i| mmu.bg_pal.get(i) ?? 0xFF
+
+    ob_pal_byte : Mmu, U64 -> U8
+    ob_pal_byte = |mmu, i| mmu.ob_pal.get(i) ?? 0xFF
+
+    # OPRI: 1 selects DMG-style X-coordinate sprite priority
+    opri_x_order : Mmu -> Bool
+    opri_x_order = |mmu| mmu.opri == 1
+
     # BCPD/OCPD data-port writes: store at the specifier's index, then
     # advance it when the auto-increment bit is set. (Palette list update
     # bound before the record spread on purpose — see the refcount trap in

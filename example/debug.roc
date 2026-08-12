@@ -30,29 +30,29 @@ main! = |args| {
     Ok({})
 }
 
-write_view! : Str, Str, U64, U64, List(U8) => Try({}, _)
-write_view! = |dir, name, width, height, shades| {
+write_view! : Str, Str, U64, U64, List(U16) => Try({}, _)
+write_view! = |dir, name, width, height, pixels| {
     path = Path.utf8("${dir}/${name}")
-    path.write_bytes!(ppm(width, height, shades))?
+    path.write_bytes!(ppm(width, height, pixels))?
     Ok({})
 }
 
-ppm : U64, U64, List(U8) -> List(U8)
-ppm = |width, height, shades| {
+ppm : U64, U64, List(U16) -> List(U8)
+ppm = |width, height, pixels| {
     var bytes = "P6\n${width.to_str()} ${height.to_str()}\n255\n".to_utf8()
     var i = 0
-    while i < shades.len() {
-        gray =
-            match shades.get(i) ?? 0 {
-                0 => 255
-                1 => 170
-                2 => 85
-                _ => 0
-            }
-        bytes = bytes.append(gray).append(gray).append(gray)
+    while i < pixels.len() {
+        px = pixels.get(i) ?? 0
+        bytes = bytes.append(expand5(px.shr_zf_wrap(10))).append(expand5(px.shr_zf_wrap(5))).append(expand5(px))
         i = i.plus(1)
     }
     bytes
+}
+
+expand5 : U16 -> U8
+expand5 = |v| {
+    c = v.bitwise_and(0x1F).to_u8_wrap()
+    c.shl_wrap(3).bitwise_or(c.shr_zf_wrap(2))
 }
 
 parse_args : List(OsStr) -> Try({ rom_path : Path, out_dir : Str, frames : U64 }, [FailedToReadArgs(Str), ..])

@@ -48,18 +48,18 @@ GameBoy := {
     peek : GameBoy, U16 -> U8
     peek = |gb, addr| gb.mmu.read(addr)
 
-    framebuffer : GameBoy -> List(U8)
+    framebuffer : GameBoy -> List(U16)
     framebuffer = |gb| gb.ppu.frame()
 
     # Debug renders (see Ppu): 256x256 background map, 128x192 tile sheet,
-    # 64x80 OAM grid — shades 0..3, blittable by any host
-    debug_background : GameBoy -> List(U8)
+    # 64x80 OAM grid — RGB555 pixels, blittable by any host
+    debug_background : GameBoy -> List(U16)
     debug_background = |gb| Ppu.debug_background(gb.mmu)
 
-    debug_tiles : GameBoy -> List(U8)
+    debug_tiles : GameBoy -> List(U16)
     debug_tiles = |gb| Ppu.debug_tiles(gb.mmu)
 
-    debug_oam : GameBoy -> List(U8)
+    debug_oam : GameBoy -> List(U16)
     debug_oam = |gb| Ppu.debug_oam(gb.mmu)
 
     no_buttons = |_| Mmu.no_buttons({})
@@ -588,7 +588,7 @@ expect {
     fb = gb.framebuffer()
     gb.mmu.read(0xFF44) == 144
     and fb.len() == 23040
-    and fb.fold(Bool.True, |ok, shade| ok and shade <= 3)
+    and fb.fold(Bool.True, |ok, px| ok and (px == 0x7FFF or px == 0x56B5 or px == 0x294A or px == 0x0000))
 }
 
 # run_until without a breakpoint stops for the frame, like run_frame
