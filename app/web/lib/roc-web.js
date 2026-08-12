@@ -67,7 +67,10 @@ async function run(wasmUrl, opts, status, canvas) {
   canvas.style.height = `${h * scale}px`;
   canvas.style.imageRendering = 'pixelated';
 
-  const correction = x.config_correction ? x.config_correction() : 0;
+  // ?correction=0|1 overrides the app's configured color correction — an
+  // A/B switch for judging the CGB LCD curve against raw output live
+  const override = new URLSearchParams(location.search).get('correction');
+  const correction = override !== null ? Number(override) : (x.config_correction ? x.config_correction() : 0);
   const { renderer, name: backend } = await createRenderer(x.config_renderer(), canvas, w, h, correction);
 
   // Input
