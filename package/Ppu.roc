@@ -66,8 +66,8 @@ Ppu := {
                         ppu = render_line(ppu, mmu, ly)
                         {}
                     } else if boundary == 252 {
-                        # enter HBlank (mode 0)
-                        mmu = stat_interrupt(set_mode(mmu, 0), 0x08)
+                        # enter HBlank (mode 0); an armed HBlank DMA copies here
+                        mmu = Mmu.hdma_hblank(stat_interrupt(set_mode(mmu, 0), 0x08))
                         {}
                     } else {
                         # line complete
