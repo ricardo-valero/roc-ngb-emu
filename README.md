@@ -4,7 +4,7 @@ A Game Boy (DMG) emulator written in [Roc](https://www.roc-lang.org). WIP!
 
 **Status:** playable, with a sound core! The SM83 CPU passes all 12 Blargg
 `cpu_instrs` ROMs (including the combined MBC1 one), the PPU renders
-[dmg-acid2](https://github.com/mattcurrie/dmg-acid2) pixel-perfect, MBC1/MBC3/MBC5
+[dmg-acid2](https://github.com/mattcurrie/dmg-acid2) and [cgb-acid2](https://github.com/mattcurrie/cgb-acid2) pixel-perfect (CGB color rendering; full CGB game support arrives with double-speed and HDMA), MBC1/MBC3/MBC5
 cartridges work, and the four-channel APU synthesizes audio at 48 kHz —
 verified by Blargg's `dmg_sound` register test and a frozen WAV digest.
 A [roc-ray](https://github.com/lukewilliamboswell/roc-ray) app plays ROMs in

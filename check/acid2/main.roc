@@ -22,9 +22,9 @@ import chk.Sha256
 main! : List(OsStr) => Try({}, _)
 main! = |args| {
     match args {
-        [_, flag_arg, rom_arg] =>
+        [_, flag_arg, rom_arg, prefix_arg] =>
             if Path.from_os_str(flag_arg).display() == "--check" {
-                check!(Path.from_os_str(rom_arg))
+                check!(Path.from_os_str(rom_arg), Path.from_os_str(prefix_arg).display())
             } else {
                 dump!(args)
             }
@@ -33,32 +33,32 @@ main! = |args| {
     }
 }
 
-check! : Path => Try({}, _)
-check! = |rom_path| {
+check! : Path, Str => Try({}, _)
+check! = |rom_path, prefix| {
     image = render(rom_path.read_bytes!()?, 120)
     actual = Sha256.hex(image)
-    golden_path = Path.utf8("check/acid2/golden.sha256")
+    golden_path = Path.utf8("${prefix}.sha256")
     golden_bytes = read_or_empty!(golden_path)
     if is_empty(golden_bytes) {
         {
             golden_path.write_bytes!("${actual}\n".to_utf8())?
-            Path.utf8("check/acid2/golden.ppm").write_bytes!(image)?
-            Stdout.line!("GOLDEN CREATED  check/acid2/golden.sha256")?
-            Stdout.line!("      review check/acid2/golden.ppm against the published reference, then commit the .sha256")?
+            Path.utf8("${prefix}.ppm").write_bytes!(image)?
+            Stdout.line!("GOLDEN CREATED  ${prefix}.sha256")?
+            Stdout.line!("      review ${prefix}.ppm against the published reference, then commit the .sha256")?
             Err(GoldenCreated)
         }
     } else {
         {
             expected = Str.from_utf8(golden_bytes) ?? ""
             if expected.contains(actual) {
-                Stdout.line!("PASS  dmg-acid2 render matches the golden digest")?
+                Stdout.line!("PASS  render matches ${prefix}.sha256")?
                 Ok({})
             } else {
-                Path.utf8("check/acid2/actual.ppm").write_bytes!(image)?
-                Stdout.line!("FAIL  dmg-acid2 digest mismatch")?
+                Path.utf8("${prefix}-actual.ppm").write_bytes!(image)?
+                Stdout.line!("FAIL  digest mismatch vs ${prefix}.sha256")?
                 Stdout.line!("      expected: ${expected}")?
                 Stdout.line!("      actual:   ${actual}")?
-                Stdout.line!("      actual frame kept at check/acid2/actual.ppm")?
+                Stdout.line!("      actual frame kept at ${prefix}-actual.ppm")?
                 Err(DigestMismatch)
             }
         }
@@ -84,22 +84,22 @@ render = |rom, frames| {
     ppm(gb.framebuffer())
 }
 
-ppm : List(U8) -> List(U8)
-ppm = |shades| {
+ppm : List(U16) -> List(U8)
+ppm = |pixels| {
     var bytes = "P6\n160 144\n255\n".to_utf8()
     var i = 0
-    while i < shades.len() {
-        gray =
-            match shades.get(i) ?? 0 {
-                0 => 255
-                1 => 170
-                2 => 85
-                _ => 0
-            }
-        bytes = bytes.append(gray).append(gray).append(gray)
+    while i < pixels.len() {
+        px = pixels.get(i) ?? 0
+        bytes = bytes.append(expand5(px.shr_zf_wrap(10))).append(expand5(px.shr_zf_wrap(5))).append(expand5(px))
         i = i.plus(1)
     }
     bytes
+}
+
+expand5 : U16 -> U8
+expand5 = |v| {
+    c = v.bitwise_and(0x1F).to_u8_wrap()
+    c.shl_wrap(3).bitwise_or(c.shr_zf_wrap(2))
 }
 
 parse_args : List(OsStr) -> Try({ rom_path : Path, out_path : Path, frames : U64 }, [FailedToReadArgs(Str), ..])
