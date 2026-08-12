@@ -44,6 +44,9 @@ in
     name = "check-blargg";
     runtimeInputs = [roc];
     text = ''
-      roc run check/run.roc -- check/blargg/passlist ${lib.concatMapStringsSep " " (p: ''"${gb-test-roms}/${p}"'') roms}
+      runner="$(mktemp -t roc-runner-XXXXXX)"
+      roc build check/run.roc --output="$runner" >/dev/null
+      "$runner" check/blargg/passlist ${lib.concatMapStringsSep " " (p: ''"${gb-test-roms}/${p}"'') roms}
+      rm -f "$runner"
     '';
   }

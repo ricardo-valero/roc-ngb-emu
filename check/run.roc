@@ -83,7 +83,7 @@ check_rom! : Path => Try({ passed : Bool, serial : Str, memory : Str }, _)
 check_rom! = |rom_path| {
     rom = rom_path.read_bytes!()?
     var gb = GameBoy.init(rom)
-    var verdict = 0 # 0 running, 1 passed, 2 failed, 3 out of budget
+    var verdict = 0.U8 # 0 running, 1 passed, 2 failed, 3 out of budget
     var chunks = max_chunks
     while verdict == 0 {
         if chunks == 0 {

@@ -38,7 +38,7 @@ check! = |rom_path| {
     image = render(rom_path.read_bytes!()?, 120)
     actual = Sha256.hex(image)
     golden_path = Path.utf8("check/acid2/golden.sha256")
-    golden_bytes = golden_path.read_bytes!() ?? List.repeat(0x00.U8, 0)
+    golden_bytes = read_or_empty!(golden_path)
     if is_empty(golden_bytes) {
         {
             golden_path.write_bytes!("${actual}\n".to_utf8())?
@@ -125,3 +125,9 @@ parse_u64 = |os_str|
 
 is_empty : List(U8) -> Bool
 is_empty = |bytes| bytes.len() == 0
+
+# Indirection on purpose: the flow analyzer constant-folds a `?? fallback`
+# on an effectful call at the use site and emits a spurious warning that
+# fails `roc build`; behind an effectful helper it does not.
+read_or_empty! : Path => List(U8)
+read_or_empty! = |path| path.read_bytes!() ?? List.repeat(0x00.U8, 0)

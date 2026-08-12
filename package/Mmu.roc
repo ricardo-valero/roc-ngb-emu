@@ -13,6 +13,20 @@ Mmu := {
     apu_events : List(U8), # channel triggers (0-3) and power-off (0xF0), drained by the APU
     samples : List(F32), # APU output ring (preallocated: append-in-spread clones, set does not)
     sample_count : U64, # write index into the ring
+    model : [Dmg, Cgb], # console model, from the header CGB flag (0x0143).
+    # Stored here pragmatically: the bus is the substrate every component
+    # already holds (register gating consults it constantly; the PPU reads
+    # through the Mmu). Extending the family (Mgb, Sgb, ...) extends the tag.
+    vbk : U8, # CGB VRAM bank select (0xFF4F, bit 0)
+    svbk : U8, # CGB WRAM bank select (0xFF70, bits 0-2; 0 selects 1)
+    vram1 : List(U8), # CGB VRAM bank 1 (bank 0 stays in mem)
+    wram_hi : List(U8), # CGB WRAM banks 2-7 (bank 1 stays in mem)
+    bg_pal : List(U8), # CGB background palette RAM, 64 bytes
+    ob_pal : List(U8), # CGB object palette RAM, 64 bytes
+    bcps : U8, # BG palette specifier: bit 7 auto-increment, bits 0-5 index
+    ocps : U8, # OBJ palette specifier
+    key1_prepare : Bool, # KEY1 speed-switch armed (switching is a later increment)
+    opri : U8, # object priority mode (used by the CGB render path later)
     mbc : [None, Mbc1, Mbc3, Mbc5],
     rom_bank : U8, # raw register value; 0->1 translation happens at read (not MBC5)
     rom_bank_hi : U8, # MBC5 ninth ROM bank bit (0x3000-0x3FFF register)
@@ -45,10 +59,22 @@ Mmu := {
             } else {
                 None
             }
+        cgb_flag = rom.get(0x0143) ?? 0x00
         base : Mmu
         base = {
             mem: List.repeat(0, 0x10000),
             rom: rom,
+            model: if cgb_flag == 0x80 or cgb_flag == 0xC0 { Cgb } else { Dmg },
+            vbk: 0,
+            svbk: 0,
+            vram1: List.repeat(0, 0x2000),
+            wram_hi: List.repeat(0, 0x6000),
+            bg_pal: List.repeat(0xFF, 64),
+            ob_pal: List.repeat(0xFF, 64),
+            bcps: 0,
+            ocps: 0,
+            key1_prepare: Bool.False,
+            opri: 0,
             cart_ram: List.repeat(0, 0x20000), # 128 KiB: MBC5's max (16 banks); others mask lower
             serial_out: [],
             div_counter: 0,
@@ -110,9 +136,69 @@ Mmu := {
             }
         } else if addr == 0xFF00 {
             read_p1(mmu)
+        } else if addr >= 0x8000 and addr < 0xA000 and is_cgb(mmu) and mmu.vbk == 1 {
+            mmu.vram1.get(addr.to_u64().minus(0x8000)) ?? 0xFF
+        } else if addr >= 0xD000 and addr < 0xE000 and is_cgb(mmu) and svbk_bank(mmu) >= 2 {
+            mmu.wram_hi.get(svbk_bank(mmu).minus(2).shl_wrap(12).plus(addr.to_u64().minus(0xD000))) ?? 0xFF
+        } else if addr == 0xFF4F {
+            if is_cgb(mmu) { U8.bitwise_or(0xFE, mmu.vbk) } else { 0xFF }
+        } else if addr == 0xFF70 {
+            if is_cgb(mmu) { U8.bitwise_or(0xF8, mmu.svbk) } else { 0xFF }
+        } else if addr == 0xFF68 {
+            if is_cgb(mmu) { mmu.bcps.bitwise_or(0x40) } else { 0xFF }
+        } else if addr == 0xFF69 {
+            if is_cgb(mmu) { mmu.bg_pal.get(mmu.bcps.bitwise_and(0x3F).to_u64()) ?? 0xFF } else { 0xFF }
+        } else if addr == 0xFF6A {
+            if is_cgb(mmu) { mmu.ocps.bitwise_or(0x40) } else { 0xFF }
+        } else if addr == 0xFF6B {
+            if is_cgb(mmu) { mmu.ob_pal.get(mmu.ocps.bitwise_and(0x3F).to_u64()) ?? 0xFF } else { 0xFF }
+        } else if addr == 0xFF4D {
+            if is_cgb(mmu) { if mmu.key1_prepare { 0x7F } else { 0x7E } } else { 0xFF }
+        } else if addr == 0xFF6C {
+            if is_cgb(mmu) { U8.bitwise_or(0xFE, mmu.opri) } else { 0xFF }
         } else {
             mmu.mem.get(addr.to_u64()) ?? 0xFF
         }
+
+    # Effective CGB WRAM bank for 0xD000-0xDFFF (0 selects 1)
+    svbk_bank : Mmu -> U64
+    svbk_bank = |mmu| {
+        b = mmu.svbk.bitwise_and(0x07).to_u64()
+        if b == 0 { 1 } else { b }
+    }
+
+    # Bank-explicit VRAM read, independent of the game's VBK selection —
+    # the CGB PPU fetches tiles from bank 0 and attributes from bank 1.
+    read_vram : Mmu, U8, U16 -> U8
+    read_vram = |mmu, bank, addr|
+        if bank == 1 and is_cgb(mmu) {
+            mmu.vram1.get(addr.to_u64().minus(0x8000)) ?? 0xFF
+        } else {
+            mmu.mem.get(addr.to_u64()) ?? 0xFF
+        }
+
+    is_cgb : Mmu -> Bool
+    is_cgb = |mmu| mmu.model == Cgb
+
+    # BCPD/OCPD data-port writes: store at the specifier's index, then
+    # advance it when the auto-increment bit is set. (Palette list update
+    # bound before the record spread on purpose — see the refcount trap in
+    # the toolchain notes.)
+    write_bcpd : Mmu, U8 -> Mmu
+    write_bcpd = |mmu, value| {
+        idx = mmu.bcps.bitwise_and(0x3F)
+        pal = mmu.bg_pal.set(idx.to_u64(), value) ?? mmu.bg_pal
+        next = if mmu.bcps.bitwise_and(0x80) != 0x00 { idx.plus(1).bitwise_and(0x3F).bitwise_or(0x80) } else { mmu.bcps }
+        { ..mmu, bg_pal: pal, bcps: next }
+    }
+
+    write_ocpd : Mmu, U8 -> Mmu
+    write_ocpd = |mmu, value| {
+        idx = mmu.ocps.bitwise_and(0x3F)
+        pal = mmu.ob_pal.set(idx.to_u64(), value) ?? mmu.ob_pal
+        next = if mmu.ocps.bitwise_and(0x80) != 0x00 { idx.plus(1).bitwise_and(0x3F).bitwise_or(0x80) } else { mmu.ocps }
+        { ..mmu, ob_pal: pal, ocps: next }
+    }
 
     bank_count : Mmu -> U64
     bank_count = |mmu| {
@@ -327,6 +413,26 @@ Mmu := {
             } else {
                 mmu.poke(0xFF26, (mmu.mem.get(0xFF26) ?? 0x00).bitwise_and(0x0F).bitwise_or(0x80))
             }
+        } else if addr >= 0x8000 and addr < 0xA000 and is_cgb(mmu) and mmu.vbk == 1 {
+            { ..mmu, vram1: mmu.vram1.set(addr.to_u64().minus(0x8000), value) ?? mmu.vram1 }
+        } else if addr >= 0xD000 and addr < 0xE000 and is_cgb(mmu) and svbk_bank(mmu) >= 2 {
+            { ..mmu, wram_hi: mmu.wram_hi.set(svbk_bank(mmu).minus(2).shl_wrap(12).plus(addr.to_u64().minus(0xD000)), value) ?? mmu.wram_hi }
+        } else if addr == 0xFF4F {
+            if is_cgb(mmu) { { ..mmu, vbk: value.bitwise_and(0x01) } } else { mmu }
+        } else if addr == 0xFF70 {
+            if is_cgb(mmu) { { ..mmu, svbk: value.bitwise_and(0x07) } } else { mmu }
+        } else if addr == 0xFF68 {
+            if is_cgb(mmu) { { ..mmu, bcps: value.bitwise_and(0xBF) } } else { mmu }
+        } else if addr == 0xFF69 {
+            if is_cgb(mmu) { write_bcpd(mmu, value) } else { mmu }
+        } else if addr == 0xFF6A {
+            if is_cgb(mmu) { { ..mmu, ocps: value.bitwise_and(0xBF) } } else { mmu }
+        } else if addr == 0xFF6B {
+            if is_cgb(mmu) { write_ocpd(mmu, value) } else { mmu }
+        } else if addr == 0xFF4D {
+            if is_cgb(mmu) { { ..mmu, key1_prepare: value.bitwise_and(0x01) == 0x01 } } else { mmu }
+        } else if addr == 0xFF6C {
+            if is_cgb(mmu) { { ..mmu, opri: value.bitwise_and(0x01) } } else { mmu }
         } else if addr == 0xFF02 {
             # Serial control: bit 7 starts a transfer; capture SB as the
             # Blargg reporting channel and mark the transfer complete
@@ -630,3 +736,66 @@ expect {
     r.events == [1] and r.mmu.take_apu_events().events == []
 }
 expect Mmu.init(test_rom).write(0xFF26, 0x00).write(0xFF19, 0x87).apu_events == [0xF0]
+
+# --- CGB memory infrastructure ---
+
+cgb_rom : List(U8)
+cgb_rom = set_byte(test_rom, 0x0143, 0x80)
+
+# VBK: banks hold independent contents; readback is 0xFE | bank
+expect {
+    m = Mmu.init(cgb_rom).write(0x8000, 0x11).write(0xFF4F, 0x01).write(0x8000, 0x22)
+    m.read(0x8000) == 0x22
+    and m.write(0xFF4F, 0x00).read(0x8000) == 0x11
+    and m.read(0xFF4F) == 0xFF
+    and m.write(0xFF4F, 0x00).read(0xFF4F) == 0xFE
+}
+
+# SVBK: bank switch preserves contents; 0 selects 1; C000 stays bank 0
+expect {
+    m = Mmu.init(cgb_rom).write(0xD000, 0xAA).write(0xFF70, 0x02).write(0xD000, 0xBB)
+    m.read(0xD000) == 0xBB
+    and m.write(0xFF70, 0x01).read(0xD000) == 0xAA
+    and m.write(0xFF70, 0x00).read(0xD000) == 0xAA
+}
+expect Mmu.init(cgb_rom).write(0xFF70, 0x05).read(0xFF70) == 0xFD
+expect Mmu.init(cgb_rom).write(0xC123, 0x77).write(0xFF70, 0x04).read(0xC123) == 0x77
+
+# Palette RAM: auto-increment walk, then read back without it
+expect {
+    m = Mmu.init(cgb_rom).write(0xFF68, 0x80).write(0xFF69, 0x1F).write(0xFF69, 0x7C)
+    m.read(0xFF68).bitwise_and(0x3F) == 0x02
+    and m.write(0xFF68, 0x00).read(0xFF69) == 0x1F
+    and m.write(0xFF68, 0x01).read(0xFF69) == 0x7C
+}
+# BG and OBJ palette memories are independent
+expect {
+    m = Mmu.init(cgb_rom).write(0xFF68, 0x05).write(0xFF69, 0x33).write(0xFF6A, 0x05).write(0xFF6B, 0x44)
+    m.write(0xFF68, 0x05).read(0xFF69) == 0x33 and m.read(0xFF6B) == 0x44
+}
+# No auto-increment without bit 7
+expect Mmu.init(cgb_rom).write(0xFF68, 0x03).write(0xFF69, 0x99).read(0xFF68).bitwise_and(0x3F) == 0x03
+
+# KEY1 stores the prepare bit; OPRI stores its bit
+expect Mmu.init(cgb_rom).read(0xFF4D) == 0x7E
+expect Mmu.init(cgb_rom).write(0xFF4D, 0x01).read(0xFF4D) == 0x7F
+expect Mmu.init(cgb_rom).write(0xFF6C, 0x01).read(0xFF6C) == 0xFF
+expect Mmu.init(cgb_rom).write(0xFF6C, 0x00).read(0xFF6C) == 0xFE
+
+# read_vram is bank-explicit regardless of the game's VBK selection
+expect {
+    m = Mmu.init(cgb_rom).write(0x8000, 0x11).write(0xFF4F, 0x01).write(0x8000, 0x22)
+    Mmu.read_vram(m, 0, 0x8000) == 0x11 and Mmu.read_vram(m, 1, 0x8000) == 0x22
+}
+
+# DMG inertness: every CGB register reads 0xFF, writes change nothing
+expect {
+    m = Mmu.init(test_rom)
+    m.write(0xFF4F, 0x01).read(0xFF4F) == 0xFF
+    and m.write(0xFF70, 0x03).read(0xFF70) == 0xFF
+    and m.write(0xFF68, 0x80).read(0xFF68) == 0xFF
+    and m.write(0xFF69, 0x12).read(0xFF69) == 0xFF
+    and m.read(0xFF4D) == 0xFF
+    and m.read(0xFF6C) == 0xFF
+}
+expect Mmu.init(test_rom).write(0xFF4F, 0x01).write(0x8000, 0x33).write(0xFF4F, 0x00).read(0x8000) == 0x33
