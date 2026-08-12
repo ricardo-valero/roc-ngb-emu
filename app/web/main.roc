@@ -11,7 +11,7 @@ import web.App
 import web.Host
 import ngb.GameBoy
 
-Model : Box(GameBoy)
+Model : { gb : Box(GameBoy), frames : U64 }
 
 program = { init, render! }
 
@@ -21,7 +21,7 @@ init = App.init(
         .with_screen({ width: 160, height: 144 })
         .with_scale(4)
         .with_renderer(Auto),
-    |rom| Box.box(GameBoy.init(rom)),
+    |rom| { gb: Box.box(GameBoy.init(rom)), frames: 0 },
 )
 
 render! : Model, Host => Model
@@ -36,11 +36,36 @@ render! = |model, host| {
         start: host.key_down(KeyEnter),
         select: host.key_down(KeyBackspace),
     }
-    ran = Box.unbox(model).run_frame(buttons)
+    ran = Box.unbox(model.gb).run_frame(buttons)
     drained = ran.take_samples()
+    # Once a second, log the machine state the way a debugger would ask
+    # for it — the fastest answer to "why is the screen blank"
+    if model.frames % 60 == 0 {
+        host.log!(debug_line(drained.gb))
+    } else {
+        {}
+    }
     host.blit!(rgba(drained.gb.framebuffer()))
     host.queue_audio!(drained.samples)
-    Box.box(drained.gb)
+    { gb: Box.box(drained.gb), frames: model.frames + 1 }
+}
+
+hex4 : U16 -> Str
+hex4 = |v| {
+    nib = |n| {
+        c = n.bitwise_and(0x0F).to_u8_wrap()
+        if c < 10 { c.plus(48) } else { c.plus(87) }
+    }
+    Str.from_utf8([nib(v.shr_zf_wrap(12)), nib(v.shr_zf_wrap(8)), nib(v.shr_zf_wrap(4)), nib(v)]) ?? "????"
+}
+
+hex2 : U8 -> Str
+hex2 = |v| hex4(v.to_u16())
+
+debug_line : GameBoy -> Str
+debug_line = |gb| {
+    pc = gb.reg.read16(ProgramCounter)
+    "pc=${hex4(pc)} op=${hex2(gb.peek(pc))} ly=${hex2(gb.peek(0xFF44))} lcdc=${hex2(gb.peek(0xFF40))} stat=${hex2(gb.peek(0xFF41))} ie=${hex2(gb.peek(0xFFFF))} if=${hex2(gb.peek(0xFF0F))} key1=${hex2(gb.peek(0xFF4D))} ime=${if gb.ime { "1" } else { "0" }} halted=${if gb.halted { "1" } else { "0" }}"
 }
 
 # RGB555 framebuffer to RGBA8 (5-bit channels expanded to 8)
