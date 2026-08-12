@@ -5,16 +5,18 @@ Each becomes a proposal when its time comes (2026-08-11).
 
 ## Near-term (named gaps with known shapes)
 
-- **CGB audio polish** — the planned arc increment 4: wave-RAM quirks and
-  length-counter details; the informative `dmg_sound`/`cgb_sound` singles
-  in `check-blargg` measure exactly the "strange audio" heard in games.
-- **CGB color correction** — raw RGB555 looks oversaturated vs. the real
-  CGB LCD games were tuned for. A display concern, so it belongs in
-  roc-web's fragment shader (a correction curve in WGSL), keeping the
-  core and its goldens hardware-truthful. Could ship as a renderer
-  option (`raw | corrected`).
 - **MBC3 RTC** — a fake always-ticking clock unblocks the licensed games
   that poll it at boot.
+- **Wave-RAM access window** — the last three informative `dmg_sound`
+  singles (09/10/12) need sub-instruction APU/CPU phase accuracy the
+  batched APU intentionally skips; revisit only if a game audibly cares.
+
+Done since this list was written: CGB audio polish (2026-08-11, PR #17 —
+write-time APU side effects, length edge clocking, model-aware power;
+dmg_sound 02/03/05/07/08/11 now gate) and CGB color correction
+(2026-08-11, PR #18 — roc-web v0.3.0 `with_color_correction(Cgb)`,
+near's matrix in the fragment shader; grays are fixed points so DMG is
+unaffected).
 
 ## The big four (user wishlist)
 
