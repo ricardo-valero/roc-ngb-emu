@@ -220,9 +220,6 @@ Mmu := {
     opri_x_order : Mmu -> Bool
     opri_x_order = |mmu| mmu.opri == 1
 
-    is_double_speed : Mmu -> Bool
-    is_double_speed = |mmu| mmu.double_speed
-
     # STOP with the prepare bit armed toggles double speed (CGB only)
     stop_switch : Mmu -> Mmu
     stop_switch = |mmu|

@@ -139,7 +139,7 @@ GameBoy := {
     # the PPU and APU run in real time, so double speed feeds them half.
     finish : GameBoy, U64 -> (GameBoy, U64)
     finish = |gb, cycles| {
-        video_cycles = if gb.mmu.is_double_speed() { cycles // 2 } else { cycles }
+        video_cycles = if gb.mmu.double_speed { cycles // 2 } else { cycles }
         r = gb.ppu.tick(gb.mmu.tick(cycles), video_cycles)
         a = gb.apu.tick(r.mmu, video_cycles)
         ({ ..gb, mmu: a.mmu, ppu: r.ppu, apu: a.apu }, cycles)
