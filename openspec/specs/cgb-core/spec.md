@@ -1,0 +1,58 @@
+# cgb-core Specification
+
+## Purpose
+
+Game Boy Color machine behaviors layered over the DMG core: console detection, banked memory, color palette RAM, and the CGB register file, grown incrementally (this change: memory infrastructure; later: color rendering, double speed, HDMA).
+
+## Requirements
+
+### Requirement: Console detection
+A cartridge whose header CGB flag is set (0x80 or 0xC0) SHALL run in CGB mode, and the CPU SHALL boot with `A = 0x11`; a cartridge without the flag SHALL run in DMG mode with `A = 0x01` and behavior identical to the pre-CGB core.
+
+#### Scenario: CGB cart detected
+- **WHEN** a ROM with CGB flag 0x80 is loaded
+- **THEN** the accumulator reads 0x11 at the entry point
+
+#### Scenario: DMG cart unaffected
+- **WHEN** a ROM without the CGB flag is loaded
+- **THEN** the accumulator reads 0x01 and all CGB registers are inert
+
+### Requirement: Banked VRAM
+In CGB mode, VBK (0xFF4F) bit 0 SHALL select between two 8 KiB VRAM banks at 0x8000–0x9FFF, each retaining its own contents; VBK SHALL read back as 0xFE OR the selected bank.
+
+#### Scenario: Banks hold independent data
+- **WHEN** a byte is written at 0x8000 with VBK=0 and a different byte at 0x8000 with VBK=1
+- **THEN** switching VBK back and forth reads each bank's own byte
+
+#### Scenario: VBK readback
+- **WHEN** 1 is written to VBK
+- **THEN** VBK reads 0xFF, and after writing 0 it reads 0xFE
+
+### Requirement: Banked WRAM
+In CGB mode, SVBK (0xFF70) bits 0–2 SHALL select the WRAM bank at 0xD000–0xDFFF among banks 1–7, with 0 selecting bank 1; 0xC000–0xCFFF SHALL remain bank 0 regardless.
+
+#### Scenario: Bank switch preserves contents
+- **WHEN** bytes are written at 0xD000 under SVBK=1 and SVBK=2
+- **THEN** each bank reads back its own byte after switching
+
+#### Scenario: Zero selects one
+- **WHEN** SVBK is written 0 after writing a byte under SVBK=1
+- **THEN** 0xD000 reads the bank-1 byte
+
+### Requirement: Palette RAM ports
+In CGB mode, BCPS/BCPD (0xFF68/0xFF69) and OCPS/OCPD (0xFF6A/0xFF6B) SHALL address two independent 64-byte palette memories: the specifier holds a 6-bit index and an auto-increment bit (bit 7) that advances the index after each data write; data reads and writes SHALL access the byte at the current index.
+
+#### Scenario: Auto-increment write sequence
+- **WHEN** BCPS is set to 0x80 and two bytes are written to BCPD
+- **THEN** palette bytes 0 and 1 hold them, and BCPS's index reads 2
+
+#### Scenario: Independent memories
+- **WHEN** the same index is written via BCPD and OCPD with different values
+- **THEN** each data port reads back its own memory's byte
+
+### Requirement: CGB registers inert on DMG
+On DMG carts, VBK, SVBK, BCPS/BCPD, OCPS/OCPD, KEY1, and OPRI SHALL read 0xFF and drop writes.
+
+#### Scenario: DMG inertness
+- **WHEN** a DMG cart writes and reads these registers
+- **THEN** reads are 0xFF and no banking or palette state changes
