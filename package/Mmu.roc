@@ -25,7 +25,12 @@ Mmu := {
     ob_pal : List(U8), # CGB object palette RAM, 64 bytes
     bcps : U8, # BG palette specifier: bit 7 auto-increment, bits 0-5 index
     ocps : U8, # OBJ palette specifier
-    key1_prepare : Bool, # KEY1 speed-switch armed (switching is a later increment)
+    key1_prepare : Bool, # KEY1 speed-switch armed
+    double_speed : Bool, # CGB double-speed mode (CPU+timers 2x vs PPU/APU)
+    hdma_src : U16, # VRAM DMA source (low 4 bits masked off)
+    hdma_dst : U16, # VRAM DMA destination within 0x8000-0x9FF0
+    hdma_blocks : U8, # remaining 16-byte blocks for an active HBlank DMA
+    hdma_active : Bool,
     opri : U8, # object priority mode (used by the CGB render path later)
     mbc : [None, Mbc1, Mbc3, Mbc5],
     rom_bank : U8, # raw register value; 0->1 translation happens at read (not MBC5)
@@ -74,6 +79,11 @@ Mmu := {
             bcps: 0,
             ocps: 0,
             key1_prepare: Bool.False,
+            double_speed: Bool.False,
+            hdma_src: 0,
+            hdma_dst: 0x8000,
+            hdma_blocks: 0,
+            hdma_active: Bool.False,
             opri: 0,
             cart_ram: List.repeat(0, 0x20000), # 128 KiB: MBC5's max (16 banks); others mask lower
             serial_out: [],
@@ -153,7 +163,21 @@ Mmu := {
         } else if addr == 0xFF6B {
             if is_cgb(mmu) { mmu.ob_pal.get(mmu.ocps.bitwise_and(0x3F).to_u64()) ?? 0xFF } else { 0xFF }
         } else if addr == 0xFF4D {
-            if is_cgb(mmu) { if mmu.key1_prepare { 0x7F } else { 0x7E } } else { 0xFF }
+            if is_cgb(mmu) {
+                speed = if mmu.double_speed { 0x80.U8 } else { 0x00 }
+                prepare = if mmu.key1_prepare { 0x01.U8 } else { 0x00 }
+                speed.bitwise_or(0x7E).bitwise_or(prepare)
+            } else {
+                0xFF
+            }
+        } else if addr >= 0xFF51 and addr <= 0xFF54 {
+            0xFF # HDMA1-4 are write-only
+        } else if addr == 0xFF55 {
+            if is_cgb(mmu) and mmu.hdma_active {
+                mmu.hdma_blocks.minus_wrap(1).bitwise_and(0x7F)
+            } else {
+                0xFF
+            }
         } else if addr == 0xFF6C {
             if is_cgb(mmu) { U8.bitwise_or(0xFE, mmu.opri) } else { 0xFF }
         } else {
@@ -190,6 +214,67 @@ Mmu := {
     # OPRI: 1 selects DMG-style X-coordinate sprite priority
     opri_x_order : Mmu -> Bool
     opri_x_order = |mmu| mmu.opri == 1
+
+    is_double_speed : Mmu -> Bool
+    is_double_speed = |mmu| mmu.double_speed
+
+    # STOP with the prepare bit armed toggles double speed (CGB only)
+    stop_switch : Mmu -> Mmu
+    stop_switch = |mmu|
+        if is_cgb(mmu) and mmu.key1_prepare {
+            { ..mmu, double_speed: mmu.double_speed == Bool.False, key1_prepare: Bool.False }
+        } else {
+            mmu
+        }
+
+    # HDMA5: bit 7 clear = immediate GDMA of (len+1)x16 bytes (or cancel an
+    # active HBlank DMA); bit 7 set = arm HBlank DMA of (len+1) blocks
+    write_hdma5 : Mmu, U8 -> Mmu
+    write_hdma5 = |mmu, value| {
+        blocks = value.bitwise_and(0x7F).plus(1)
+        if value.bitwise_and(0x80) != 0x00 {
+            { ..mmu, hdma_blocks: blocks, hdma_active: Bool.True }
+        } else if mmu.hdma_active {
+            { ..mmu, hdma_active: Bool.False }
+        } else {
+            gdma(mmu, blocks)
+        }
+    }
+
+    gdma : Mmu, U8 -> Mmu
+    gdma = |mmu0, blocks| {
+        var m = mmu0
+        var b = 0.U8
+        while b < blocks {
+            m = copy_block(m)
+            b = b.plus(1)
+        }
+        m
+    }
+
+    # One 16-byte VRAM DMA block through read/write, so source banking and
+    # the VBK destination bank apply naturally; pointers advance
+    copy_block : Mmu -> Mmu
+    copy_block = |mmu0| {
+        var m = mmu0
+        var i = 0.U16
+        while i < 16 {
+            m = m.write(m.hdma_dst.plus(i), m.read(m.hdma_src.plus(i)))
+            i = i.plus(1)
+        }
+        { ..m, hdma_src: m.hdma_src.plus_wrap(16), hdma_dst: m.hdma_dst.plus_wrap(16) }
+    }
+
+    # Called by the PPU at each visible line's HBlank entry
+    hdma_hblank : Mmu -> Mmu
+    hdma_hblank = |mmu|
+        if mmu.hdma_active {
+            copied = copy_block(mmu)
+            remaining = copied.hdma_blocks.minus_wrap(1)
+            { ..copied, hdma_blocks: remaining, hdma_active: remaining != 0 }
+        } else {
+            mmu
+        }
 
     # BCPD/OCPD data-port writes: store at the specifier's index, then
     # advance it when the auto-increment bit is set. (Palette list update
@@ -442,6 +527,16 @@ Mmu := {
             if is_cgb(mmu) { write_ocpd(mmu, value) } else { mmu }
         } else if addr == 0xFF4D {
             if is_cgb(mmu) { { ..mmu, key1_prepare: value.bitwise_and(0x01) == 0x01 } } else { mmu }
+        } else if addr == 0xFF51 {
+            if is_cgb(mmu) { { ..mmu, hdma_src: value.to_u16().shl_wrap(8).bitwise_or(mmu.hdma_src.bitwise_and(0x00F0)) } } else { mmu }
+        } else if addr == 0xFF52 {
+            if is_cgb(mmu) { { ..mmu, hdma_src: mmu.hdma_src.bitwise_and(0xFF00).bitwise_or(value.bitwise_and(0xF0).to_u16()) } } else { mmu }
+        } else if addr == 0xFF53 {
+            if is_cgb(mmu) { { ..mmu, hdma_dst: U16.plus(0x8000, value.bitwise_and(0x1F).to_u16().shl_wrap(8).bitwise_or(mmu.hdma_dst.bitwise_and(0x00F0))) } } else { mmu }
+        } else if addr == 0xFF54 {
+            if is_cgb(mmu) { { ..mmu, hdma_dst: U16.plus(0x8000, mmu.hdma_dst.bitwise_and(0x1F00).bitwise_or(value.bitwise_and(0xF0).to_u16())) } } else { mmu }
+        } else if addr == 0xFF55 {
+            if is_cgb(mmu) { write_hdma5(mmu, value) } else { mmu }
         } else if addr == 0xFF6C {
             if is_cgb(mmu) { { ..mmu, opri: value.bitwise_and(0x01) } } else { mmu }
         } else if addr == 0xFF02 {
@@ -810,3 +905,59 @@ expect {
     and m.read(0xFF6C) == 0xFF
 }
 expect Mmu.init(test_rom).write(0xFF4F, 0x01).write(0x8000, 0x33).write(0xFF4F, 0x00).read(0x8000) == 0x33
+
+# --- CGB double speed + VRAM DMA ---
+
+# KEY1 + STOP: toggle on armed STOP, clear prepare, report in bit 7
+expect {
+    m = Mmu.init(cgb_rom).write(0xFF4D, 0x01)
+    m2 = Mmu.stop_switch(m)
+    m3 = Mmu.stop_switch(m2.write(0xFF4D, 0x01))
+    m2.read(0xFF4D) == 0xFE and m3.read(0xFF4D) == 0x7E
+}
+expect Mmu.stop_switch(Mmu.init(cgb_rom)).read(0xFF4D) == 0x7E
+expect Mmu.stop_switch(Mmu.init(test_rom).write(0xFF4D, 0x01)).read(0xFF4D) == 0xFF
+
+# GDMA: (len+1)x16 bytes, immediate, FF55 reads done afterwards
+expect {
+    m0 = Mmu.init(cgb_rom).write(0xC000, 0xAB).write(0xC00F, 0xCD)
+    m = m0.write(0xFF51, 0xC0).write(0xFF52, 0x00).write(0xFF53, 0x00).write(0xFF54, 0x00).write(0xFF55, 0x00)
+    m.read(0x8000) == 0xAB and m.read(0x800F) == 0xCD and m.read(0xFF55) == 0xFF
+}
+# GDMA honors the selected VRAM bank
+expect {
+    m =
+        Mmu.init(cgb_rom)
+            .write(0xC000, 0x77)
+            .write(0xFF4F, 0x01)
+            .write(0xFF51, 0xC0)
+            .write(0xFF52, 0x00)
+            .write(0xFF53, 0x00)
+            .write(0xFF54, 0x00)
+            .write(0xFF55, 0x00)
+    Mmu.read_vram(m, 1, 0x8000) == 0x77 and Mmu.read_vram(m, 0, 0x8000) == 0x00
+}
+# HBlank DMA: 16 bytes per hblank, counts down, 0xFF when done
+expect {
+    m0 =
+        Mmu.init(cgb_rom)
+            .write(0xC000, 0x5A)
+            .write(0xC010, 0xA5)
+            .write(0xFF51, 0xC0)
+            .write(0xFF52, 0x00)
+            .write(0xFF53, 0x00)
+            .write(0xFF54, 0x00)
+            .write(0xFF55, 0x81)
+    m1 = Mmu.hdma_hblank(m0)
+    m2 = Mmu.hdma_hblank(m1)
+    m0.read(0xFF55) == 0x01
+    and m1.read(0xFF55) == 0x00
+    and m1.read(0x8000) == 0x5A
+    and m2.read(0xFF55) == 0xFF
+    and m2.read(0x8010) == 0xA5
+}
+# Writing bit-7-clear while active cancels
+expect Mmu.init(cgb_rom).write(0xFF55, 0x85).write(0xFF55, 0x00).read(0xFF55) == 0xFF
+# DMG inert
+expect Mmu.init(test_rom).write(0xFF55, 0x00).read(0xFF55) == 0xFF
+expect Mmu.init(test_rom).read(0xFF51) == 0xFF

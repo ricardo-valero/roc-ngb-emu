@@ -134,11 +134,14 @@ GameBoy := {
         }
     }
 
-    # Every path leaves through here so the timer, PPU, and APU see all cycles
+    # Every path leaves through here so the timer, PPU, and APU see all
+    # cycles. Timers are CPU-clocked (full count even in double speed);
+    # the PPU and APU run in real time, so double speed feeds them half.
     finish : GameBoy, U64 -> (GameBoy, U64)
     finish = |gb, cycles| {
-        r = gb.ppu.tick(gb.mmu.tick(cycles), cycles)
-        a = gb.apu.tick(r.mmu, cycles)
+        video_cycles = if gb.mmu.is_double_speed() { cycles // 2 } else { cycles }
+        r = gb.ppu.tick(gb.mmu.tick(cycles), video_cycles)
+        a = gb.apu.tick(r.mmu, video_cycles)
         ({ ..gb, mmu: a.mmu, ppu: r.ppu, apu: a.apu }, cycles)
     }
 
@@ -326,7 +329,7 @@ GameBoy := {
     execute = |gb, pc, instr|
         match instr {
             Nop => { gb: gb, pc: pc, cycles: 4.U64 }
-            Stop => { gb: gb, pc: pc.plus_wrap(1), cycles: 4.U64 } # NOP that skips its padding byte
+            Stop => { gb: { ..gb, mmu: gb.mmu.stop_switch() }, pc: pc.plus_wrap(1), cycles: 4.U64 } # speed switch when armed; else a NOP that skips its padding
             Halt => { gb: { ..gb, halted: Bool.True }, pc: pc, cycles: 4.U64 }
             Illegal => { gb: gb, pc: pc, cycles: 4.U64 } # real hardware locks up
             Unknown => { gb: gb, pc: pc, cycles: 4.U64 }
@@ -627,4 +630,21 @@ expect {
 
         (_, FrameReady) => Bool.False
     }
+}
+
+# Double speed: after an armed STOP, the PPU advances half as fast —
+# LD A,1; LDH (4D),A; STOP burn 20+2 dots, then 217 NOPs at 2 dots each
+# land exactly on the 456-dot line boundary.
+expect {
+    base = List.repeat(0x00.U8, 0x8000)
+    with_flag = base.set(0x0143, 0x80) ?? base
+    prog = [0x3E, 0x01, 0xE0, 0x4D, 0x10, 0x00]
+    rom = prog.fold({ i: 0x0100.U64, r: with_flag }, |acc, byte| { i: acc.i + 1, r: acc.r.set(acc.i, byte) ?? acc.r }).r
+    var gb = GameBoy.init(rom)
+    var n = 0
+    while n < 220 {
+        gb = after_step(gb)
+        n = n + 1
+    }
+    gb.peek(0xFF4D) == 0xFE and gb.peek(0xFF44) == 1
 }
