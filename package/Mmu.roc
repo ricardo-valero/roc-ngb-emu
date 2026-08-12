@@ -13,7 +13,10 @@ Mmu := {
     apu_events : List(U8), # channel triggers (0-3) and power-off (0xF0), drained by the APU
     samples : List(F32), # APU output ring (preallocated: append-in-spread clones, set does not)
     sample_count : U64, # write index into the ring
-    cgb : Bool, # console mode from the header CGB flag (0x0143)
+    model : [Dmg, Cgb], # console model, from the header CGB flag (0x0143).
+    # Stored here pragmatically: the bus is the substrate every component
+    # already holds (register gating consults it constantly; the PPU reads
+    # through the Mmu). Extending the family (Mgb, Sgb, ...) extends the tag.
     vbk : U8, # CGB VRAM bank select (0xFF4F, bit 0)
     svbk : U8, # CGB WRAM bank select (0xFF70, bits 0-2; 0 selects 1)
     vram1 : List(U8), # CGB VRAM bank 1 (bank 0 stays in mem)
@@ -61,7 +64,7 @@ Mmu := {
         base = {
             mem: List.repeat(0, 0x10000),
             rom: rom,
-            cgb: cgb_flag == 0x80 or cgb_flag == 0xC0,
+            model: if cgb_flag == 0x80 or cgb_flag == 0xC0 { Cgb } else { Dmg },
             vbk: 0,
             svbk: 0,
             vram1: List.repeat(0, 0x2000),
@@ -133,26 +136,26 @@ Mmu := {
             }
         } else if addr == 0xFF00 {
             read_p1(mmu)
-        } else if addr >= 0x8000 and addr < 0xA000 and mmu.cgb and mmu.vbk == 1 {
+        } else if addr >= 0x8000 and addr < 0xA000 and is_cgb(mmu) and mmu.vbk == 1 {
             mmu.vram1.get(addr.to_u64().minus(0x8000)) ?? 0xFF
-        } else if addr >= 0xD000 and addr < 0xE000 and mmu.cgb and svbk_bank(mmu) >= 2 {
+        } else if addr >= 0xD000 and addr < 0xE000 and is_cgb(mmu) and svbk_bank(mmu) >= 2 {
             mmu.wram_hi.get(svbk_bank(mmu).minus(2).shl_wrap(12).plus(addr.to_u64().minus(0xD000))) ?? 0xFF
         } else if addr == 0xFF4F {
-            if mmu.cgb { U8.bitwise_or(0xFE, mmu.vbk) } else { 0xFF }
+            if is_cgb(mmu) { U8.bitwise_or(0xFE, mmu.vbk) } else { 0xFF }
         } else if addr == 0xFF70 {
-            if mmu.cgb { U8.bitwise_or(0xF8, mmu.svbk) } else { 0xFF }
+            if is_cgb(mmu) { U8.bitwise_or(0xF8, mmu.svbk) } else { 0xFF }
         } else if addr == 0xFF68 {
-            if mmu.cgb { mmu.bcps.bitwise_or(0x40) } else { 0xFF }
+            if is_cgb(mmu) { mmu.bcps.bitwise_or(0x40) } else { 0xFF }
         } else if addr == 0xFF69 {
-            if mmu.cgb { mmu.bg_pal.get(mmu.bcps.bitwise_and(0x3F).to_u64()) ?? 0xFF } else { 0xFF }
+            if is_cgb(mmu) { mmu.bg_pal.get(mmu.bcps.bitwise_and(0x3F).to_u64()) ?? 0xFF } else { 0xFF }
         } else if addr == 0xFF6A {
-            if mmu.cgb { mmu.ocps.bitwise_or(0x40) } else { 0xFF }
+            if is_cgb(mmu) { mmu.ocps.bitwise_or(0x40) } else { 0xFF }
         } else if addr == 0xFF6B {
-            if mmu.cgb { mmu.ob_pal.get(mmu.ocps.bitwise_and(0x3F).to_u64()) ?? 0xFF } else { 0xFF }
+            if is_cgb(mmu) { mmu.ob_pal.get(mmu.ocps.bitwise_and(0x3F).to_u64()) ?? 0xFF } else { 0xFF }
         } else if addr == 0xFF4D {
-            if mmu.cgb { if mmu.key1_prepare { 0x7F } else { 0x7E } } else { 0xFF }
+            if is_cgb(mmu) { if mmu.key1_prepare { 0x7F } else { 0x7E } } else { 0xFF }
         } else if addr == 0xFF6C {
-            if mmu.cgb { U8.bitwise_or(0xFE, mmu.opri) } else { 0xFF }
+            if is_cgb(mmu) { U8.bitwise_or(0xFE, mmu.opri) } else { 0xFF }
         } else {
             mmu.mem.get(addr.to_u64()) ?? 0xFF
         }
@@ -168,14 +171,14 @@ Mmu := {
     # the CGB PPU fetches tiles from bank 0 and attributes from bank 1.
     read_vram : Mmu, U8, U16 -> U8
     read_vram = |mmu, bank, addr|
-        if bank == 1 and mmu.cgb {
+        if bank == 1 and is_cgb(mmu) {
             mmu.vram1.get(addr.to_u64().minus(0x8000)) ?? 0xFF
         } else {
             mmu.mem.get(addr.to_u64()) ?? 0xFF
         }
 
     is_cgb : Mmu -> Bool
-    is_cgb = |mmu| mmu.cgb
+    is_cgb = |mmu| mmu.model == Cgb
 
     # BCPD/OCPD data-port writes: store at the specifier's index, then
     # advance it when the auto-increment bit is set. (Palette list update
@@ -410,26 +413,26 @@ Mmu := {
             } else {
                 mmu.poke(0xFF26, (mmu.mem.get(0xFF26) ?? 0x00).bitwise_and(0x0F).bitwise_or(0x80))
             }
-        } else if addr >= 0x8000 and addr < 0xA000 and mmu.cgb and mmu.vbk == 1 {
+        } else if addr >= 0x8000 and addr < 0xA000 and is_cgb(mmu) and mmu.vbk == 1 {
             { ..mmu, vram1: mmu.vram1.set(addr.to_u64().minus(0x8000), value) ?? mmu.vram1 }
-        } else if addr >= 0xD000 and addr < 0xE000 and mmu.cgb and svbk_bank(mmu) >= 2 {
+        } else if addr >= 0xD000 and addr < 0xE000 and is_cgb(mmu) and svbk_bank(mmu) >= 2 {
             { ..mmu, wram_hi: mmu.wram_hi.set(svbk_bank(mmu).minus(2).shl_wrap(12).plus(addr.to_u64().minus(0xD000)), value) ?? mmu.wram_hi }
         } else if addr == 0xFF4F {
-            if mmu.cgb { { ..mmu, vbk: value.bitwise_and(0x01) } } else { mmu }
+            if is_cgb(mmu) { { ..mmu, vbk: value.bitwise_and(0x01) } } else { mmu }
         } else if addr == 0xFF70 {
-            if mmu.cgb { { ..mmu, svbk: value.bitwise_and(0x07) } } else { mmu }
+            if is_cgb(mmu) { { ..mmu, svbk: value.bitwise_and(0x07) } } else { mmu }
         } else if addr == 0xFF68 {
-            if mmu.cgb { { ..mmu, bcps: value.bitwise_and(0xBF) } } else { mmu }
+            if is_cgb(mmu) { { ..mmu, bcps: value.bitwise_and(0xBF) } } else { mmu }
         } else if addr == 0xFF69 {
-            if mmu.cgb { write_bcpd(mmu, value) } else { mmu }
+            if is_cgb(mmu) { write_bcpd(mmu, value) } else { mmu }
         } else if addr == 0xFF6A {
-            if mmu.cgb { { ..mmu, ocps: value.bitwise_and(0xBF) } } else { mmu }
+            if is_cgb(mmu) { { ..mmu, ocps: value.bitwise_and(0xBF) } } else { mmu }
         } else if addr == 0xFF6B {
-            if mmu.cgb { write_ocpd(mmu, value) } else { mmu }
+            if is_cgb(mmu) { write_ocpd(mmu, value) } else { mmu }
         } else if addr == 0xFF4D {
-            if mmu.cgb { { ..mmu, key1_prepare: value.bitwise_and(0x01) == 0x01 } } else { mmu }
+            if is_cgb(mmu) { { ..mmu, key1_prepare: value.bitwise_and(0x01) == 0x01 } } else { mmu }
         } else if addr == 0xFF6C {
-            if mmu.cgb { { ..mmu, opri: value.bitwise_and(0x01) } } else { mmu }
+            if is_cgb(mmu) { { ..mmu, opri: value.bitwise_and(0x01) } } else { mmu }
         } else if addr == 0xFF02 {
             # Serial control: bit 7 starts a transfer; capture SB as the
             # Blargg reporting channel and mark the transfer complete
