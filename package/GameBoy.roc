@@ -33,7 +33,12 @@ GameBoy := {
             ei_pending: Bool.False,
             breakpoint: None,
         }
-        gb
+        # CGB carts boot with A = 0x11 — how games detect the console
+        if gb.mmu.is_cgb() {
+            { ..gb, reg: gb.reg.write8(Accumulator, 0x11) }
+        } else {
+            gb
+        }
     }
 
     serial : GameBoy -> List(U8)
@@ -487,6 +492,14 @@ after_step = |gb| match gb.step() { (g, _) => g }
 
 cycles_of : GameBoy -> U64
 cycles_of = |gb| match gb.step() { (_, c) => c }
+
+# CGB console detection: A = 0x11 with the header flag, 0x01 without
+expect {
+    plain = List.repeat(0x00.U8, 0x8000)
+    cgb = plain.set(0x0143, 0x80) ?? plain
+    GameBoy.init(cgb).reg.read8(Accumulator) == 0x11
+    and GameBoy.init(plain).reg.read8(Accumulator) == 0x01
+}
 
 # LD A, 0x2A: A loaded, PC advanced by 2, 8 cycles
 expect {
