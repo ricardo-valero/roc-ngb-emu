@@ -150,36 +150,8 @@ Mmu := {
             mmu.vram1.get(addr.to_u64().minus(0x8000)) ?? 0xFF
         } else if addr >= 0xD000 and addr < 0xE000 and is_cgb(mmu) and svbk_bank(mmu) >= 2 {
             mmu.wram_hi.get(svbk_bank(mmu).minus(2).shl_wrap(12).plus(addr.to_u64().minus(0xD000))) ?? 0xFF
-        } else if addr == 0xFF4F {
-            if is_cgb(mmu) { U8.bitwise_or(0xFE, mmu.vbk) } else { 0xFF }
-        } else if addr == 0xFF70 {
-            if is_cgb(mmu) { U8.bitwise_or(0xF8, mmu.svbk) } else { 0xFF }
-        } else if addr == 0xFF68 {
-            if is_cgb(mmu) { mmu.bcps.bitwise_or(0x40) } else { 0xFF }
-        } else if addr == 0xFF69 {
-            if is_cgb(mmu) { mmu.bg_pal.get(mmu.bcps.bitwise_and(0x3F).to_u64()) ?? 0xFF } else { 0xFF }
-        } else if addr == 0xFF6A {
-            if is_cgb(mmu) { mmu.ocps.bitwise_or(0x40) } else { 0xFF }
-        } else if addr == 0xFF6B {
-            if is_cgb(mmu) { mmu.ob_pal.get(mmu.ocps.bitwise_and(0x3F).to_u64()) ?? 0xFF } else { 0xFF }
-        } else if addr == 0xFF4D {
-            if is_cgb(mmu) {
-                speed = if mmu.double_speed { 0x80.U8 } else { 0x00 }
-                prepare = if mmu.key1_prepare { 0x01.U8 } else { 0x00 }
-                speed.bitwise_or(0x7E).bitwise_or(prepare)
-            } else {
-                0xFF
-            }
-        } else if addr >= 0xFF51 and addr <= 0xFF54 {
-            0xFF # HDMA1-4 are write-only
-        } else if addr == 0xFF55 {
-            if is_cgb(mmu) and mmu.hdma_active {
-                mmu.hdma_blocks.minus_wrap(1).bitwise_and(0x7F)
-            } else {
-                0xFF
-            }
-        } else if addr == 0xFF6C {
-            if is_cgb(mmu) { U8.bitwise_or(0xFE, mmu.opri) } else { 0xFF }
+        } else if is_cgb_reg(addr) {
+            if is_cgb(mmu) { read_cgb_reg(mmu, addr) } else { 0xFF }
         } else {
             mmu.mem.get(addr.to_u64()) ?? 0xFF
         }
@@ -190,6 +162,51 @@ Mmu := {
         b = mmu.svbk.bitwise_and(0x07).to_u64()
         if b == 0 { 1 } else { b }
     }
+
+    # The CGB-only IO register file: KEY1, VBK, HDMA1-5, palettes, OPRI, SVBK.
+    # Membership is checked once in the read/write dispatch so the DMG
+    # behavior (reads 0xFF, writes ignored) lives in exactly one place.
+    is_cgb_reg : U16 -> Bool
+    is_cgb_reg = |addr|
+        addr == 0xFF4D or addr == 0xFF4F or addr == 0xFF70 or (addr >= 0xFF51 and addr <= 0xFF55) or (addr >= 0xFF68 and addr <= 0xFF6C)
+
+    read_cgb_reg : Mmu, U16 -> U8
+    read_cgb_reg = |mmu, addr|
+        match addr {
+            0xFF4D => {
+                speed = if mmu.double_speed { 0x80.U8 } else { 0x00 }
+                prepare = if mmu.key1_prepare { 0x01.U8 } else { 0x00 }
+                speed.bitwise_or(0x7E).bitwise_or(prepare)
+            }
+            0xFF4F => U8.bitwise_or(0xFE, mmu.vbk)
+            0xFF55 => if mmu.hdma_active { mmu.hdma_blocks.minus_wrap(1).bitwise_and(0x7F) } else { 0xFF }
+            0xFF68 => mmu.bcps.bitwise_or(0x40)
+            0xFF69 => mmu.bg_pal.get(mmu.bcps.bitwise_and(0x3F).to_u64()) ?? 0xFF
+            0xFF6A => mmu.ocps.bitwise_or(0x40)
+            0xFF6B => mmu.ob_pal.get(mmu.ocps.bitwise_and(0x3F).to_u64()) ?? 0xFF
+            0xFF6C => U8.bitwise_or(0xFE, mmu.opri)
+            0xFF70 => U8.bitwise_or(0xF8, mmu.svbk)
+            _ => 0xFF # HDMA1-4 are write-only
+        }
+
+    write_cgb_reg : Mmu, U16, U8 -> Mmu
+    write_cgb_reg = |mmu, addr, value|
+        match addr {
+            0xFF4D => { ..mmu, key1_prepare: value.bitwise_and(0x01) == 0x01 }
+            0xFF4F => { ..mmu, vbk: value.bitwise_and(0x01) }
+            0xFF51 => { ..mmu, hdma_src: value.to_u16().shl_wrap(8).bitwise_or(mmu.hdma_src.bitwise_and(0x00F0)) }
+            0xFF52 => { ..mmu, hdma_src: mmu.hdma_src.bitwise_and(0xFF00).bitwise_or(value.bitwise_and(0xF0).to_u16()) }
+            0xFF53 => { ..mmu, hdma_dst: U16.plus(0x8000, value.bitwise_and(0x1F).to_u16().shl_wrap(8).bitwise_or(mmu.hdma_dst.bitwise_and(0x00F0))) }
+            0xFF54 => { ..mmu, hdma_dst: U16.plus(0x8000, mmu.hdma_dst.bitwise_and(0x1F00).bitwise_or(value.bitwise_and(0xF0).to_u16())) }
+            0xFF55 => write_hdma5(mmu, value)
+            0xFF68 => { ..mmu, bcps: value.bitwise_and(0xBF) }
+            0xFF69 => write_bcpd(mmu, value)
+            0xFF6A => { ..mmu, ocps: value.bitwise_and(0xBF) }
+            0xFF6B => write_ocpd(mmu, value)
+            0xFF6C => { ..mmu, opri: value.bitwise_and(0x01) }
+            0xFF70 => { ..mmu, svbk: value.bitwise_and(0x07) }
+            _ => mmu
+        }
 
     # Bank-explicit VRAM read, independent of the game's VBK selection —
     # the CGB PPU fetches tiles from bank 0 and attributes from bank 1.
@@ -515,32 +532,8 @@ Mmu := {
             { ..mmu, vram1: mmu.vram1.set(addr.to_u64().minus(0x8000), value) ?? mmu.vram1 }
         } else if addr >= 0xD000 and addr < 0xE000 and is_cgb(mmu) and svbk_bank(mmu) >= 2 {
             { ..mmu, wram_hi: mmu.wram_hi.set(svbk_bank(mmu).minus(2).shl_wrap(12).plus(addr.to_u64().minus(0xD000)), value) ?? mmu.wram_hi }
-        } else if addr == 0xFF4F {
-            if is_cgb(mmu) { { ..mmu, vbk: value.bitwise_and(0x01) } } else { mmu }
-        } else if addr == 0xFF70 {
-            if is_cgb(mmu) { { ..mmu, svbk: value.bitwise_and(0x07) } } else { mmu }
-        } else if addr == 0xFF68 {
-            if is_cgb(mmu) { { ..mmu, bcps: value.bitwise_and(0xBF) } } else { mmu }
-        } else if addr == 0xFF69 {
-            if is_cgb(mmu) { write_bcpd(mmu, value) } else { mmu }
-        } else if addr == 0xFF6A {
-            if is_cgb(mmu) { { ..mmu, ocps: value.bitwise_and(0xBF) } } else { mmu }
-        } else if addr == 0xFF6B {
-            if is_cgb(mmu) { write_ocpd(mmu, value) } else { mmu }
-        } else if addr == 0xFF4D {
-            if is_cgb(mmu) { { ..mmu, key1_prepare: value.bitwise_and(0x01) == 0x01 } } else { mmu }
-        } else if addr == 0xFF51 {
-            if is_cgb(mmu) { { ..mmu, hdma_src: value.to_u16().shl_wrap(8).bitwise_or(mmu.hdma_src.bitwise_and(0x00F0)) } } else { mmu }
-        } else if addr == 0xFF52 {
-            if is_cgb(mmu) { { ..mmu, hdma_src: mmu.hdma_src.bitwise_and(0xFF00).bitwise_or(value.bitwise_and(0xF0).to_u16()) } } else { mmu }
-        } else if addr == 0xFF53 {
-            if is_cgb(mmu) { { ..mmu, hdma_dst: U16.plus(0x8000, value.bitwise_and(0x1F).to_u16().shl_wrap(8).bitwise_or(mmu.hdma_dst.bitwise_and(0x00F0))) } } else { mmu }
-        } else if addr == 0xFF54 {
-            if is_cgb(mmu) { { ..mmu, hdma_dst: U16.plus(0x8000, mmu.hdma_dst.bitwise_and(0x1F00).bitwise_or(value.bitwise_and(0xF0).to_u16())) } } else { mmu }
-        } else if addr == 0xFF55 {
-            if is_cgb(mmu) { write_hdma5(mmu, value) } else { mmu }
-        } else if addr == 0xFF6C {
-            if is_cgb(mmu) { { ..mmu, opri: value.bitwise_and(0x01) } } else { mmu }
+        } else if is_cgb_reg(addr) {
+            if is_cgb(mmu) { write_cgb_reg(mmu, addr, value) } else { mmu }
         } else if addr == 0xFF02 {
             # Serial control: bit 7 starts a transfer; capture SB as the
             # Blargg reporting channel and mark the transfer complete
