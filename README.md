@@ -7,12 +7,13 @@ A Game Boy (DMG) emulator written in [Roc](https://www.roc-lang.org). WIP!
 [dmg-acid2](https://github.com/mattcurrie/dmg-acid2) and [cgb-acid2](https://github.com/mattcurrie/cgb-acid2) pixel-perfect (CGB color, double-speed, and VRAM DMA — CGB games are playable), MBC1/MBC3/MBC5
 cartridges work, and the four-channel APU synthesizes audio at 48 kHz —
 verified by Blargg's `dmg_sound` register test and a frozen WAV digest.
-A [roc-ray](https://github.com/lukewilliamboswell/roc-ray) app plays ROMs in
-a window with keyboard input, and the same core runs **in the browser** via
-WebGPU on the [roc-web](https://github.com/ricardo-valero/roc-web) platform
-(see below) — pixel-identical to native, 90+ fps, **with sound** and
-runtime ROM loading (drop a `.gb` on the page). Not yet: speaker output in
-the native app (roc-ray needs a PCM-streaming API), battery saves, MBC3 RTC.
+A [roc-ray](https://github.com/ricardo-valero/roc-ray) app (our fork, which
+adds binary file I/O and PCM audio streaming) plays ROMs in a window **with
+sound** and keyboard input and loads them at runtime, and the same core runs
+**in the browser** via WebGPU on the
+[roc-web](https://github.com/ricardo-valero/roc-web) platform (see below) —
+pixel-identical to native, 90+ fps, with sound and runtime ROM loading
+(drop a `.gb` on the page). Not yet: battery saves, MBC3 RTC.
 
 The repo splits into `package/` (the emulator core, pure Roc),
 `app/` (the two frontends: `ray.roc` native window, `web/` browser),
@@ -20,17 +21,25 @@ The repo splits into `package/` (the emulator core, pure Roc),
 list, passlist/golden, and packaging), and `example/` (headless dev tools
 that exercise the core).
 
-Play a ROM in a native window — the ray app embeds `rom/play.gb` at
-**build time**, so put the file there first, then build (all inside
-`nix develop`):
+Play a ROM in a native window — the ray app reads the ROM from disk at
+**startup** (first argument, else `rom/play.gbc`), so swapping games
+needs no rebuild. The platform is the local
+[roc-ray fork](https://github.com/ricardo-valero/roc-ray) checkout at
+`../roc-ray` (branch `file-io`); build its host once with `zig build`
+there, then (inside `nix develop`):
 
 ```bash
-cp your-game.gb rom/play.gb              # any 32 KiB / MBC1 / MBC3 ROM
-roc build app/ray.roc --output=ray && ./ray
+roc build app/ray.roc --output=ray
+./ray your-game.gb                       # any 32 KiB / MBC1 / MBC3 / MBC5 ROM
+./ray                                    # plays rom/play.gbc
 ```
 
 Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select,
 Esc quits.
+
+Sound plays through the fork's PCM stream: the APU's 48 kHz stereo output
+is pushed to the host each frame, so game audio just works (silence, not
+a crash or pitch warble, if emulation ever stalls).
 
 ## Play in the browser (roc-web)
 
