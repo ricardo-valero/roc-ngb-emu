@@ -8,7 +8,7 @@ import /Mmu
 
 Ppu := {
     dots : U64, # position within the current scanline (0..455)
-    framebuffer : List(U16), # 160x144 RGB555 pixels, row-major (DMG renders grays)
+    framebuffer : List(U16), # 160x144 BGR555 pixels (CGB palette order: red in bits 0-4), row-major (DMG renders grays)
     window_line : U8, # internal window line counter (increments only when the window rendered)
 }.{
     init : {} -> Ppu
@@ -21,7 +21,7 @@ Ppu := {
     frame : Ppu -> List(U16)
     frame = |ppu| ppu.framebuffer
 
-    # The four DMG shades as grayscale RGB555 (5-bit levels 31/21/10/0)
+    # The four DMG shades as grayscale BGR555 (5-bit levels 31/21/10/0)
     gray_555 : U8 -> U16
     gray_555 = |shade|
         match shade {
@@ -361,7 +361,7 @@ Ppu := {
         hi.shl_wrap(1).bitwise_or(lo)
     }
 
-    # RGB555 from palette RAM: palette n, color c at bytes n*8 + c*2
+    # Raw BGR555 from palette RAM: palette n, color c at bytes n*8 + c*2
     # (little-endian, bit 15 unused)
     bg_color_555 : Mmu, U8, U8 -> U16
     bg_color_555 = |mmu, pal, color| {

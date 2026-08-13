@@ -70,7 +70,7 @@ debug_line = |gb| {
     "pc=${hex4(pc)} op=${hex2(gb.peek(pc))} ly=${hex2(gb.peek(0xFF44))} lcdc=${hex2(gb.peek(0xFF40))} stat=${hex2(gb.peek(0xFF41))} ie=${hex2(gb.peek(0xFFFF))} if=${hex2(gb.peek(0xFF0F))} key1=${hex2(gb.peek(0xFF4D))} ime=${if gb.ime { "1" } else { "0" }} halted=${if gb.halted { "1" } else { "0" }}"
 }
 
-# RGB555 framebuffer to RGBA8 (5-bit channels expanded to 8)
+# BGR555 framebuffer to RGBA8 (5-bit channels expanded to 8)
 rgba : List(U16) -> List(U8)
 rgba = |pixels| {
     var out = List.repeat(255.U8, 92160)
@@ -78,9 +78,9 @@ rgba = |pixels| {
     while i < 23040 {
         px = pixels.get(i) ?? 0
         j = i * 4
-        out = out.set(j, expand5(px.shr_zf_wrap(10))) ?? out
+        out = out.set(j, expand5(px)) ?? out
         out = out.set(j + 1, expand5(px.shr_zf_wrap(5))) ?? out
-        out = out.set(j + 2, expand5(px)) ?? out
+        out = out.set(j + 2, expand5(px.shr_zf_wrap(10))) ?? out
         i = i + 1
     }
     out
