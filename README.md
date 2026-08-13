@@ -70,14 +70,24 @@ and the flake pin together. Spike evidence and benchmarks:
 ## Checks
 
 Each check is a vertical slice under `check/<name>/`: its runner, its
-ROM list (fetched by Nix with pinned hashes — no shared ROM folder), and
-its passlist or golden, wired up in `flake.nix`:
+ROMs in `data/` (fetched by the slice's `fetch.roc` — pinned URLs,
+SHA-256-verified, kept untracked by a local `.gitignore`), and its
+passlist or golden. Pure Roc, no nix beyond the devshell (matching
+sibling roc-nes-emu) — including the archive handling: mooneye's
+upstream ships one `.tar.gz`, which its fetch unpacks with the pure-Roc
+`check/lib` DEFLATE decoder and tar reader, and acid2's fetch follows
+GitHub's release-asset redirects itself:
 
 ```bash
-nix run .#check-blargg        # Blargg suites: cpu_instrs, timing, dmg_sound
-nix run .#check-mooneye       # timing/halt: mooneye acceptance subset
-nix run .#check-acid2         # PPU: dmg-acid2 vs golden digest
-nix run .#check-sound         # APU: golden WAV digest of 01-registers
+roc check/blargg/fetch.roc    # once: fetch the Blargg ROMs
+roc check/mooneye/fetch.roc   # once: fetch + unpack the mooneye subset
+roc check/acid2/fetch.roc     # once: fetch dmg-acid2 + cgb-acid2
+roc check/sound/fetch.roc     # once: fetch the sound-check ROM
+
+roc check/run.roc -- check/blargg/passlist    # Blargg: cpu_instrs, timing, dmg_sound
+roc check/run.roc -- check/mooneye/passlist   # timing/halt: mooneye acceptance subset
+roc check/acid2/main.roc                      # PPU: dmg/cgb-acid2 vs golden digests
+roc check/sound/main.roc                      # APU: golden WAV digest of 01-registers
 ```
 
 ROM suites gate on the slice's `passlist` (listed ROMs must pass — the set
