@@ -48,7 +48,7 @@ init! = App.init(
 	App.default
 		.with_title("roc-ngb-emu")
 		.with_size({ width: 160 * 4, height: 144 * 4 })
-		.with_frame_pacing(Capped(60)),
+		.with_frame_pacing(Capped(120)),
 	|host| {
 		rom_path = host.args!().get(0) ?? "rom/play.gbc"
 		rom = match host.read_bytes!(rom_path) {
@@ -105,8 +105,10 @@ render! = |model, host, frame| {
 
 	# Audio-clock pacing (wasmboy-style, mirroring app/web): run emulated
 	# frames until the speaker holds ~60 ms, bounded per tick. Emulation locks
-	# to the audio clock, so the 60 Hz cap vs 59.73 Hz Game Boy drift shows up
-	# as a rare repeated video frame instead of audio drops.
+	# to the audio clock, so cap-vs-59.73 Hz drift shows up as a repeated video
+	# frame instead of audio drops. The 120 Hz cap (not 60) keeps queue-full
+	# ticks cheap, so catch-up after a slow tick isn't throttled to 16.7 ms
+	# steps — measured 2026-08-14: DMG 38→70 ticks/s, game speed 94%.
 	now = host.unix_time!()
 	var gb = Box.unbox(model.gb)
 	var ran = 0
