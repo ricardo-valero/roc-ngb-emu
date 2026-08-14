@@ -2,8 +2,11 @@
 # ROMs load at runtime: the page fetches play.gb by default; drop any .gb
 # file onto the page (or use the picker) to swap games — no rebuild.
 # Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select.
+# NOTE: pre-release pairing — the battery/clock contract (load! taking sav
+# bytes, host.unix_time, push_battery!) is in the local roc-web checkout;
+# repoint at the release-bundle URL once v0.4.0 is cut and lib/ re-vendored.
 app [Model, program] {
-    web: platform "https://github.com/ricardo-valero/roc-web/releases/download/v0.3.0/4FxpZ7r4sKg5TJ7f8ZoNgWgwfNPzfhHL1Xgvz7k72xvu.tar.zst",
+    web: platform "../../../roc-web/platform/main.roc",
     ngb: "../../package/main.roc",
 }
 
@@ -11,7 +14,7 @@ import web.App
 import web.Host
 import ngb.GameBoy
 
-Model : { gb : Box(GameBoy), frames : U64 }
+Model : { gb : Box(GameBoy), frames : U64, save_seen : U64 }
 
 program = { init, render! }
 
@@ -23,7 +26,9 @@ init = App.init(
         .with_renderer(Auto)
         # CGB LCD curve; grays are fixed points, so DMG output is untouched
         .with_color_correction(Cgb),
-    |rom| { gb: Box.box(GameBoy.init(rom)), frames: 0 },
+    # sav is the page's stored battery bytes for this cartridge (empty on
+    # a clean start); with_battery no-ops for batteryless carts
+    |rom, sav| { gb: Box.box(GameBoy.init(rom).with_battery(sav)), frames: 0, save_seen: 0 },
 )
 
 render! : Model, Host => Model
@@ -38,8 +43,13 @@ render! = |model, host| {
         start: host.key_down(KeyEnter),
         select: host.key_down(KeyBackspace),
     }
-    ran = Box.unbox(model.gb).run_frame(buttons)
+    ran = Box.unbox(model.gb).run_frame({ buttons: buttons, now: host.unix_time() })
     drained = ran.take_samples()
+    # Battery bytes out every frame so the page always holds current save
+    # state (it persists on tab-hide); the flush flag marks the "game just
+    # saved" edge for an immediate write. Empty for batteryless carts.
+    events = drained.gb.save_events()
+    host.push_battery!(drained.gb.battery(), events != model.save_seen)
     # Once a second, log the machine state the way a debugger would ask
     # for it — the fastest answer to "why is the screen blank"
     if model.frames % 60 == 0 {
@@ -49,7 +59,7 @@ render! = |model, host| {
     }
     host.blit!(rgba(drained.gb.framebuffer()))
     host.queue_audio!(drained.samples)
-    { gb: Box.box(drained.gb), frames: model.frames + 1 }
+    { gb: Box.box(drained.gb), frames: model.frames + 1, save_seen: events }
 }
 
 hex4 : U16 -> Str

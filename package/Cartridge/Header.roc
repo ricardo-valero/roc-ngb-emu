@@ -48,6 +48,22 @@ map_type = |bytes|
         _ => Unknown
     }
 
+features : Type -> List(Feature)
+features = |type|
+    match type {
+        Rom(fs) => fs
+        Mbc1(fs) => fs
+        Mbc2(fs) => fs
+        Mbc3(fs) => fs
+        Mbc5(fs) => fs
+        Mbc6(fs) => fs
+        Mbc7(fs) => fs
+        Mmm01(fs) => fs
+        Special(HuC1(fs)) => fs
+        Special(_) => []
+        Unknown => []
+    }
+
 OldLicensee : [None, Some(Str), NewLicensee, Unknown]
 
 map_old_licensee : List(U8) -> OldLicensee
@@ -381,7 +397,52 @@ prop_match = |input|
         GlobalChecksum => { start: 0x014E, len: 1 }
     }
 
+rom_with_type : U8, U8 -> List(U8)
+rom_with_type = |type_byte, ram_byte| {
+    base = List.repeat(0.U8, 0x150)
+    with_type = base.set(0x0147, type_byte) ?? base
+    with_type.set(0x0149, ram_byte) ?? with_type
+}
+
+# MBC3+Timer+Ram+Battery (0x10), 32 KiB RAM (0x03)
+expect {
+    rom = rom_with_type(0x10, 0x03)
+    Header.has_battery(rom) and Header.has_rtc(rom) and Header.ram_bytes(rom) == 0x8000
+}
+
+# Plain MBC1 (0x01): no battery, no RTC, no RAM
+expect {
+    rom = rom_with_type(0x01, 0x00)
+    Header.has_battery(rom) == Bool.False and Header.has_rtc(rom) == Bool.False and Header.ram_bytes(rom) == 0
+}
+
+# MBC5+Ram+Battery (0x1B), 128 KiB RAM (0x04): battery without RTC
+expect {
+    rom = rom_with_type(0x1B, 0x04)
+    Header.has_battery(rom) and Header.has_rtc(rom) == Bool.False and Header.ram_bytes(rom) == 0x20000
+}
+
 Header :: [].{
+    # Battery-backed carts persist their state (cart RAM, and the RTC on
+    # Timer carts) across power-off — the `.sav` file's scope, exactly.
+    has_battery : List(U8) -> Bool
+    has_battery = |rom|
+        features(map_type(rom.sublist(prop_match(CartridgeType)))).contains(Battery)
+
+    has_rtc : List(U8) -> Bool
+    has_rtc = |rom|
+        features(map_type(rom.sublist(prop_match(CartridgeType)))).contains(Timer)
+
+    # Header-declared cart RAM size in bytes — the exact `.sav` payload
+    # size, regardless of the emulator's internal allocation.
+    ram_bytes : List(U8) -> U64
+    ram_bytes = |rom|
+        match map_ram_size(rom.sublist(prop_match(RamSize))) {
+            KiB(k) => k.to_u64().shl_wrap(10)
+            MiB(m) => m.to_u64().shl_wrap(20)
+            Unknown => 0
+        }
+
     read = |data| {
         r = |prop| data.sublist(prop_match(prop))
         {

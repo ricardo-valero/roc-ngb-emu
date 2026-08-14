@@ -2,6 +2,55 @@
 # uniquely owned and Roc can mutate it in place (never alias it elsewhere).
 # https://gbdev.io/pandocs/Memory_Map.html
 
+# MBC3 real-time clock. Raw register bytes as hardware packs them: dh
+# carries day bit 8 (bit 0), halt (bit 6), and the sticky day-overflow
+# carry (bit 7). `latched` is the copy games read after the 0x00->0x01
+# latch; `last_now` is the wall-clock second the running registers were
+# last advanced to (0 = never synced: adopt the next `now` without
+# adding elapsed time, so fresh carts and headless runs start at zero).
+RtcRegs : { s : U8, m : U8, h : U8, dl : U8, dh : U8 }
+RtcState : { regs : RtcRegs, latched : RtcRegs, last_now : U64, armed : Bool }
+
+rtc_init : {} -> RtcState
+rtc_init = |_| {
+    regs: { s: 0, m: 0, h: 0, dl: 0, dh: 0 },
+    latched: { s: 0, m: 0, h: 0, dl: 0, dh: 0 },
+    last_now: 0,
+    armed: Bool.False,
+}
+
+# Advance the running clock to `now` — called lazily at the observation
+# points only (latch, register write, battery extraction). Halted clocks
+# (dh bit 6) adopt `now` without accumulating, as does a clock that was
+# never synced or sees time move backwards. Out-of-range register values
+# are normalized through total-seconds arithmetic (a documented
+# simplification; hardware would count them oddly).
+rtc_advance : RtcState, U64 -> RtcState
+rtc_advance = |r, now| {
+    halted = r.regs.dh.bitwise_and(0x40) != 0x00
+    if now == 0 {
+        r # no clock supplied (headless caller): hold everything as-is
+    } else if r.last_now == 0 or halted or now <= r.last_now {
+        { ..r, last_now: now }
+    } else {
+        days = r.regs.dh.bitwise_and(0x01).to_u64().shl_wrap(8).plus(r.regs.dl.to_u64())
+        held = (days * 86400).plus(r.regs.h.to_u64() * 3600).plus(r.regs.m.to_u64() * 60).plus(r.regs.s.to_u64())
+        total = held.plus(now.minus(r.last_now))
+        d = total // 86400
+        carry = if d > 511 { 0x80 } else { r.regs.dh.bitwise_and(0x80) }
+        day_hi = if d % 512 >= 256 { 0x01.U8 } else { 0x00.U8 }
+        dh = carry.bitwise_or(r.regs.dh.bitwise_and(0x40)).bitwise_or(day_hi)
+        regs = {
+            s: (total % 60).to_u8_wrap(),
+            m: ((total // 60) % 60).to_u8_wrap(),
+            h: ((total // 3600) % 24).to_u8_wrap(),
+            dl: (d % 256).to_u8_wrap(),
+            dh: dh,
+        }
+        { ..r, regs: regs, last_now: now }
+    }
+}
+
 Mmu := {
     mem : List(U8),
     rom : List(U8), # full cartridge image, bank-mapped on read
@@ -38,6 +87,10 @@ Mmu := {
     bank2 : U8, # MBC1 secondary register / MBC3+MBC5 RAM bank (or RTC select)
     mode : Bool, # MBC1 banking mode
     ram_enable : Bool,
+    now : U64, # wall clock (UNIX seconds), data not effect; frontends refresh it per frame
+    rtc : [None, Rtc(RtcState)], # present on MBC3 Timer carts only
+    ram_written : Bool, # battery state touched since RAM was last enabled
+    save_events : U64, # bumped on RAM-disable-after-write: the "game just saved" signal
 }.{
     no_buttons : {} -> { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool }
     no_buttons = |_| {
@@ -99,6 +152,10 @@ Mmu := {
             bank2: 0,
             mode: Bool.False,
             ram_enable: Bool.False,
+            now: 0,
+            rtc: if type_byte == 0x0F or type_byte == 0x10 { Rtc(rtc_init({})) } else { None },
+            ram_written: Bool.False,
+            save_events: 0,
         }
         # DMG post-boot IO state. LY starts at 0; the PPU advances it for real.
         [
@@ -388,12 +445,126 @@ Mmu := {
 
     read_cart_ram : Mmu, U16 -> U8
     read_cart_ram = |mmu, addr|
-        match cart_ram_slot(mmu) {
-            Bank(b) => mmu.cart_ram.get(b.shl_wrap(13).plus(addr.to_u64().minus(0xA000))) ?? 0xFF
-            Invalid => 0xFF
+        match rtc_reg_selected(mmu) {
+            Some(reg) => reg
+            None =>
+                match cart_ram_slot(mmu) {
+                    Bank(b) => mmu.cart_ram.get(b.shl_wrap(13).plus(addr.to_u64().minus(0xA000))) ?? 0xFF
+                    Invalid => 0xFF
+                }
+        }
+
+    # The latched RTC register mapped over 0xA000-0xBFFF, if the 0x4000
+    # select holds a clock index (0x08-0x0C) — gated like cart RAM.
+    rtc_reg_selected : Mmu -> [None, Some(U8)]
+    rtc_reg_selected = |mmu|
+        match mmu.rtc {
+            Rtc(r) =>
+                if mmu.ram_enable and mmu.bank2 >= 0x08 and mmu.bank2 <= 0x0C {
+                    match mmu.bank2 {
+                        0x08 => Some(r.latched.s)
+                        0x09 => Some(r.latched.m)
+                        0x0A => Some(r.latched.h)
+                        0x0B => Some(r.latched.dl)
+                        _ => Some(r.latched.dh)
+                    }
+                } else {
+                    None
+                }
+
+            None => None
+        }
+
+    # Writes land on the running clock, masked to the bits hardware
+    # implements (s/m: 6, h: 5, dh: day bit 8 + halt + carry).
+    write_rtc_reg : Mmu, U8 -> [Done(Mmu), NotRtc]
+    write_rtc_reg = |mmu, value|
+        match mmu.rtc {
+            Rtc(r0) =>
+                if mmu.ram_enable and mmu.bank2 >= 0x08 and mmu.bank2 <= 0x0C {
+                    r = rtc_advance(r0, mmu.now)
+                    regs =
+                        match mmu.bank2 {
+                            0x08 => { ..r.regs, s: value.bitwise_and(0x3F) }
+                            0x09 => { ..r.regs, m: value.bitwise_and(0x3F) }
+                            0x0A => { ..r.regs, h: value.bitwise_and(0x1F) }
+                            0x0B => { ..r.regs, dl: value }
+                            _ => { ..r.regs, dh: value.bitwise_and(0xC1) }
+                        }
+                    Done({ ..mmu, rtc: Rtc({ ..r, regs: regs }), ram_written: Bool.True })
+                } else {
+                    NotRtc
+                }
+
+            None => NotRtc
         }
 
     set_buttons = |mmu, buttons| { ..mmu, buttons: buttons }
+
+    set_input = |mmu, input| { ..mmu, buttons: input.buttons, now: input.now }
+
+    set_cart_ram = |mmu, ram| { ..mmu, cart_ram: ram }
+
+    # The `.sav` RTC footer, 48-byte form: little-endian dwords holding
+    # the running clock (advanced to `now` — extraction is an observation
+    # point), the latched copies, then a 64-bit UNIX timestamp. Loaders
+    # use the timestamp to advance the clock by wall time spent off.
+    # Empty for carts without an RTC.
+    battery_footer : Mmu -> List(U8)
+    battery_footer = |mmu|
+        match mmu.rtc {
+            Rtc(r0) => {
+                r = rtc_advance(r0, mmu.now)
+                var out = [
+                    r.regs.s, 0, 0, 0,
+                    r.regs.m, 0, 0, 0,
+                    r.regs.h, 0, 0, 0,
+                    r.regs.dl, 0, 0, 0,
+                    r.regs.dh, 0, 0, 0,
+                    r.latched.s, 0, 0, 0,
+                    r.latched.m, 0, 0, 0,
+                    r.latched.h, 0, 0, 0,
+                    r.latched.dl, 0, 0, 0,
+                    r.latched.dh, 0, 0, 0,
+                ]
+                # After the advance this is `mmu.now` whenever a clock was
+                # supplied; headless extraction preserves the loaded stamp
+                var t = r.last_now
+                var i = 0
+                while i < 8 {
+                    out = out.append(t.to_u8_wrap())
+                    t = t.shr_zf_wrap(8)
+                    i = i.plus(1)
+                }
+                out
+            }
+
+            None => []
+        }
+
+    # Restore RTC state from a `.sav` footer — either the 48-byte form
+    # (64-bit timestamp) or legacy 44-byte (32-bit). The clock is NOT
+    # advanced here; the stored timestamp becomes `last_now`, so the next
+    # observation point applies the elapsed wall time (a halted clock
+    # stays put there too). No-op for carts without an RTC.
+    load_battery_footer : Mmu, List(U8) -> Mmu
+    load_battery_footer = |mmu, f|
+        match mmu.rtc {
+            Rtc(_) => {
+                g = |i| f.get(i) ?? 0
+                regs = { s: g(0), m: g(4), h: g(8), dl: g(12), dh: g(16) }
+                latched = { s: g(20), m: g(24), h: g(28), dl: g(32), dh: g(36) }
+                var t = 0.U64
+                var i = if f.len() >= 48 { 8.U64 } else { 4.U64 }
+                while i > 0 {
+                    i = i.minus(1)
+                    t = t.shl_wrap(8).plus(g(40.U64.plus(i)).to_u64())
+                }
+                { ..mmu, rtc: Rtc({ regs: regs, latched: latched, last_now: t, armed: Bool.False }) }
+            }
+
+            None => mmu
+        }
 
     # P1/JOYP: stored select bits plus the selected group's buttons,
     # active-low (0 = pressed). Both groups selected AND together.
@@ -506,9 +677,13 @@ Mmu := {
         if addr < 0x8000 {
             write_mbc(mmu, addr, value)
         } else if addr >= 0xA000 and addr < 0xC000 {
-            match cart_ram_slot(mmu) {
-                Bank(b) => { ..mmu, cart_ram: mmu.cart_ram.set(b.shl_wrap(13).plus(addr.to_u64().minus(0xA000)), value) ?? mmu.cart_ram }
-                Invalid => mmu
+            match write_rtc_reg(mmu, value) {
+                Done(m) => m
+                NotRtc =>
+                    match cart_ram_slot(mmu) {
+                        Bank(b) => { ..mmu, cart_ram: mmu.cart_ram.set(b.shl_wrap(13).plus(addr.to_u64().minus(0xA000)), value) ?? mmu.cart_ram, ram_written: Bool.True }
+                        Invalid => mmu
+                    }
             }
         } else if addr >= 0xFF10 and addr <= 0xFF25 {
             if apu_powered(mmu) {
@@ -584,6 +759,20 @@ Mmu := {
             mmu.poke(addr, value)
         }
 
+    # RAM enable, plus the save heuristic: games disable RAM right after
+    # writing a save to protect the SRAM — that falling edge (with writes
+    # since the last enable) bumps `save_events` so frontends know to
+    # flush battery bytes now instead of waiting for exit.
+    set_ram_enable : Mmu, U8 -> Mmu
+    set_ram_enable = |mmu, value| {
+        enabled = value.bitwise_and(0x0F) == 0x0A
+        if mmu.ram_enable and enabled == Bool.False and mmu.ram_written {
+            { ..mmu, ram_enable: enabled, ram_written: Bool.False, save_events: mmu.save_events.plus(1) }
+        } else {
+            { ..mmu, ram_enable: enabled }
+        }
+    }
+
     # MBC register writes land in the ROM address range
     write_mbc : Mmu, U16, U8 -> Mmu
     write_mbc = |mmu, addr, value|
@@ -591,7 +780,7 @@ Mmu := {
             None => mmu
             Mbc1 =>
                 if addr < 0x2000 {
-                    { ..mmu, ram_enable: value.bitwise_and(0x0F) == 0x0A }
+                    set_ram_enable(mmu, value)
                 } else if addr < 0x4000 {
                     { ..mmu, rom_bank: value.bitwise_and(0x1F) }
                 } else if addr < 0x6000 {
@@ -602,18 +791,32 @@ Mmu := {
 
             Mbc3 =>
                 if addr < 0x2000 {
-                    { ..mmu, ram_enable: value.bitwise_and(0x0F) == 0x0A }
+                    set_ram_enable(mmu, value)
                 } else if addr < 0x4000 {
                     { ..mmu, rom_bank: value.bitwise_and(0x7F) }
                 } else if addr < 0x6000 {
                     { ..mmu, bank2: value }
                 } else {
-                    mmu # RTC latch: ignored
+                    # RTC latch: 0x00 then 0x01 captures the running clock
+                    # into the readable registers atomically
+                    match mmu.rtc {
+                        Rtc(r) =>
+                            if value == 0x00 {
+                                { ..mmu, rtc: Rtc({ ..r, armed: Bool.True }) }
+                            } else if value == 0x01 and r.armed {
+                                r2 = rtc_advance(r, mmu.now)
+                                { ..mmu, rtc: Rtc({ ..r2, latched: r2.regs, armed: Bool.False }) }
+                            } else {
+                                { ..mmu, rtc: Rtc({ ..r, armed: Bool.False }) }
+                            }
+
+                        None => mmu
+                    }
                 }
 
             Mbc5 =>
                 if addr < 0x2000 {
-                    { ..mmu, ram_enable: value.bitwise_and(0x0F) == 0x0A }
+                    set_ram_enable(mmu, value)
                 } else if addr < 0x3000 {
                     { ..mmu, rom_bank: value } # full 8 bits, 0 allowed
                 } else if addr < 0x4000 {
@@ -986,3 +1189,119 @@ expect Mmu.init(cgb_rom).write(0xFF55, 0x85).write(0xFF55, 0x00).read(0xFF55) ==
 # DMG inert
 expect Mmu.init(test_rom).write(0xFF55, 0x00).read(0xFF55) == 0xFF
 expect Mmu.init(test_rom).read(0xFF51) == 0xFF
+
+rtc_input : U64 -> { buttons : { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool }, now : U64 }
+rtc_input = |n| { buttons: Mmu.no_buttons({}), now: n }
+
+# MBC3 RTC: first latch only syncs (no jump from epoch 0); the next
+# latch advances by elapsed wall time; reads without a new latch are stale
+expect {
+    m =
+        Mmu.init(big_rom(0x10))
+            .set_input(rtc_input(1000))
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x08)
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+    s0 = m.read(0xA000)
+    m2 = m.set_input(rtc_input(1061)).write(0x6000, 0x00).write(0x6000, 0x01)
+    s1 = m2.read(0xA000)
+    mins = m2.write(0x4000, 0x09).read(0xA000)
+    stale = m2.set_input(rtc_input(2000)).write(0x4000, 0x08).read(0xA000)
+    s0 == 0 and s1 == 1 and mins == 1 and stale == 1
+}
+
+# MBC3 RTC: halt (dh bit 6) freezes the clock across elapsed time
+expect {
+    m =
+        Mmu.init(big_rom(0x10))
+            .set_input(rtc_input(1000))
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x0C)
+            .write(0xA000, 0x40)
+            .set_input(rtc_input(5000))
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+    m.read(0xA000) == 0x40 and m.write(0x4000, 0x08).read(0xA000) == 0x00
+}
+
+# MBC3 RTC: 512 elapsed days set the sticky day-overflow carry (dh bit 7)
+expect {
+    m =
+        Mmu.init(big_rom(0x10))
+            .set_input(rtc_input(1000))
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+            .set_input(rtc_input(44237800)) # 1000 + 512 days
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+            .write(0x0000, 0x0A)
+    m.write(0x4000, 0x0C).read(0xA000) == 0x80 and m.write(0x4000, 0x0B).read(0xA000) == 0x00
+}
+
+# MBC3 RTC: selecting a clock register does not disturb cart RAM
+expect {
+    m =
+        Mmu.init(big_rom(0x10))
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x00)
+            .write(0xA000, 0x33)
+            .write(0x4000, 0x08)
+            .write(0xA000, 0x15)
+            .write(0x4000, 0x00)
+    m.read(0xA000) == 0x33
+}
+
+# Save signal: RAM-disable-after-write bumps the counter once; an
+# enable/disable cycle with no writes does not
+expect {
+    m0 = Mmu.init(big_rom(0x03)).write(0x0000, 0x0A).write(0xA000, 0x01)
+    m1 = m0.write(0x0000, 0x00)
+    m2 = m1.write(0x0000, 0x0A).write(0x0000, 0x00)
+    m0.save_events == 0 and m1.save_events == 1 and m2.save_events == 1
+}
+
+# RTC catch-up on load: the footer timestamp becomes last_now, so the
+# next latch advances by the wall time spent off (90 s -> 1 min 30 s)
+expect {
+    save = Mmu.init(big_rom(0x10)).set_input(rtc_input(1000)).battery_footer()
+    m =
+        Mmu.init(big_rom(0x10))
+            .load_battery_footer(save)
+            .set_input(rtc_input(1090))
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x08)
+    m.read(0xA000) == 30 and m.write(0x4000, 0x09).read(0xA000) == 1
+}
+
+# A halted clock does not catch up across a save/load
+expect {
+    save =
+        Mmu.init(big_rom(0x10))
+            .set_input(rtc_input(1000))
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x0C)
+            .write(0xA000, 0x40)
+            .battery_footer()
+    m =
+        Mmu.init(big_rom(0x10))
+            .load_battery_footer(save)
+            .set_input(rtc_input(999999))
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x08)
+    m.read(0xA000) == 0x00 and m.write(0x4000, 0x0C).read(0xA000) == 0x40
+}
+
+# Legacy 44-byte footers load; re-saving writes the 48-byte form with
+# the timestamp intact in the low dword
+expect {
+    f48 = Mmu.init(big_rom(0x10)).set_input(rtc_input(70000)).battery_footer()
+    f44 = f48.sublist({ start: 0, len: 44 })
+    resaved = Mmu.init(big_rom(0x10)).load_battery_footer(f44).battery_footer()
+    ts_lo = (resaved.get(40) ?? 0).to_u64().plus((resaved.get(41) ?? 0).to_u64().shl_wrap(8)).plus((resaved.get(42) ?? 0).to_u64().shl_wrap(16))
+    f48.len() == 48 and f44.len() == 44 and resaved.len() == 48 and ts_lo == 70000
+}

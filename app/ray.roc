@@ -29,6 +29,8 @@ Model : {
 	gb : Box(GameBoy),
 	screen : Assets.Texture,
 	speaker : Audio.Stream,
+	sav_path : Str,
+	save_seen : U64, # save_events value already flushed to disk
 }
 
 scale : F32
@@ -60,13 +62,33 @@ init! = App.init(
 			Ok(stream) => stream
 			Err(_) => crash("could not open a 48 kHz stereo audio stream — is an output device available?")
 		}
-		Ok({ gb: Box.box(GameBoy.init(rom)), screen, speaker })
+		# Battery save alongside the ROM; a missing or short file is a clean
+		# start, and with_battery no-ops for batteryless carts
+		sav_path = "${rom_path}.sav"
+		gb = match host.read_bytes!(sav_path) {
+			Ok(bytes) => GameBoy.init(rom).with_battery(bytes)
+			Err(_) => GameBoy.init(rom)
+		}
+		Ok({ gb: Box.box(gb), screen, speaker, sav_path, save_seen: 0 })
 	},
 )
+
+# Write battery bytes back to disk; batteryless carts have nothing to
+# persist and are skipped entirely. A failed write must not kill gameplay.
+flush_save! : GameBoy, Str, Host => {}
+flush_save! = |gb, sav_path, host| {
+	sav = gb.battery()
+	if sav.len() > 0 {
+		host.write_bytes!(sav_path, sav) ?? {}
+	} else {
+		{}
+	}
+}
 
 render! : Model, Host, Draw.Frame => Try(Model, [Exit(I64), PixelCountMismatch, ..])
 render! = |model, host, frame| {
 	if host.key_pressed(KeyEscape) {
+		flush_save!(Box.unbox(model.gb), model.sav_path, host)
 		host.exit!(0)
 	}
 
@@ -85,16 +107,26 @@ render! = |model, host, frame| {
 	# frames until the speaker holds ~60 ms, bounded per tick. Emulation locks
 	# to the audio clock, so the 60 Hz cap vs 59.73 Hz Game Boy drift shows up
 	# as a rare repeated video frame instead of audio drops.
+	now = host.unix_time!()
 	var gb = Box.unbox(model.gb)
 	var ran = 0
 	var queued = model.speaker.buffered!()
 	while queued < target_depth and ran < 4 {
-		stepped = gb.run_frame(buttons)
+		stepped = gb.run_frame({ buttons: buttons, now: now })
 		drained = stepped.take_samples()
 		gb = drained.gb
 		model.speaker.push!(drained.samples)
 		queued = model.speaker.buffered!()
 		ran = ran + 1
+	}
+
+	# The game disabling cart RAM after writing it is the "just saved"
+	# signal — flush to disk right then, not only at exit
+	events = gb.save_events()
+	if events != model.save_seen {
+		flush_save!(gb, model.sav_path, host)
+	} else {
+		{}
 	}
 
 	model.screen.update!(gb.framebuffer().map(shade_color))?
@@ -109,7 +141,7 @@ render! = |model, host, frame| {
 		tint: Color.white,
 	})
 
-	Ok({ ..model, gb: Box.box(gb) })
+	Ok({ ..model, gb: Box.box(gb), save_seen: events })
 }
 
 # BGR555 framebuffer pixel to screen color (5-bit channels expanded to 8)

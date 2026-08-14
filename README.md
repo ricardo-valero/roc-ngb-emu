@@ -13,7 +13,13 @@ sound** and keyboard input and loads them at runtime, and the same core runs
 **in the browser** via WebGPU on the
 [roc-web](https://github.com/ricardo-valero/roc-web) platform (see below) —
 pixel-identical to native, 90+ fps, with sound and runtime ROM loading
-(drop a `.gb` on the page). Not yet: battery saves, MBC3 RTC.
+(drop a `.gb` on the page). Battery saves persist — `<rom>.sav` on disk
+natively (the ecosystem's raw-RAM format, with the 48-byte RTC footer),
+IndexedDB in the browser — and the MBC3 real-time clock runs, halts,
+latches, and catches up across sessions from the footer timestamp.
+Wall-clock time enters the pure core as per-frame *data* (`{ buttons,
+now }`), so headless runs stay deterministic. Not yet: save states
+(BESS — see WISHLIST).
 
 The repo splits into `package/` (the emulator core, pure Roc),
 `app/` (the two frontends: `ray.roc` native window, `web/` browser),
@@ -41,23 +47,39 @@ Sound plays through the fork's PCM stream: the APU's 48 kHz stereo output
 is pushed to the host each frame, so game audio just works (silence, not
 a crash or pitch warble, if emulation ever stalls).
 
+Battery-backed games save to `<rom-path>.sav` next to the ROM — loaded at
+startup, written back when the game saves (the RAM-disable edge) and on
+Esc. The file is the ecosystem's raw cart-RAM format (plus the 48-byte
+RTC footer on MBC3 clock carts), so saves move freely between this
+emulator, others, and flashcarts.
+
 ## Play in the browser (roc-web)
 
 The browser app lives in `app/web/` — `main.roc` (a near-twin of
 `app/ray.roc`: same config-and-`render!` shape, same `host.key_down`
 buttons), a few-line `index.html`, and the vendored `lib/` from
 [roc-web](https://github.com/ricardo-valero/roc-web), the wasm32 Roc
-platform referenced by release-bundle URL just like roc-ray. ROMs load at
-**runtime**: the page fetches `play.gb` by default, and dropping any `.gb`
-onto the page (or the picker) swaps games without a rebuild. Sound works
-(48 kHz APU output via an AudioWorklet — press a key to unmute, a browser
-autoplay rule). Inside `nix develop`:
+platform — currently referenced as the local `../roc-web` checkout, which
+carries the battery/clock contract until a v0.4.0 bundle is released.
+ROMs load at **runtime**: the page fetches `play.gb` by default, and
+dropping any `.gb` onto the page (or the picker) swaps games without a
+rebuild. Sound works (48 kHz APU output via an AudioWorklet — press a key
+to unmute, a browser autoplay rule). Battery saves persist in IndexedDB,
+keyed by cartridge header (title + checksum), so the fetched default and
+a dropped copy of the same game share one save; they're written on the
+game's own save moments and when the tab hides. Inside `nix develop`:
 
 ```bash
 roc build app/web/main.roc --output=app/web/play.wasm
 cp rom/play.gb app/web/                                 # default ROM the page fetches
-python3 -m http.server 8642 --directory app/web         # open http://localhost:8642/
+roc http_server.roc -- --port 8642 --dir app/web        # open http://localhost:8642/
 ```
+
+The server is pure Roc too ([basic-webserver](https://github.com/roc-lang/basic-webserver)
+0.16.0): a declared file root with host-enforced MIME types and path
+safety — no python in the loop. It knows nothing about the emulator: a
+generic static server whose flags default to python's (`--port 8000`,
+`--dir .`).
 
 Same controls as the windowed app (no Esc — it's a browser tab). The app
 config picks the renderer (`Auto` = WebGPU → WebGL → Canvas2D); the status
@@ -88,6 +110,7 @@ roc check/run.roc -- check/blargg/passlist    # Blargg: cpu_instrs, timing, dmg_
 roc check/run.roc -- check/mooneye/passlist   # timing/halt: mooneye acceptance subset
 roc check/acid2/main.roc                      # PPU: dmg/cgb-acid2 vs golden digests
 roc check/sound/main.roc                      # APU: golden WAV digest of 01-registers
+roc check/battery/main.roc                    # battery/.sav/RTC: synthetic carts, no ROMs
 ```
 
 ROM suites gate on the slice's `passlist` (listed ROMs must pass — the set

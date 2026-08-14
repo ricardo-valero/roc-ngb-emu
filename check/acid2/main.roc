@@ -85,7 +85,7 @@ render = |rom, frames| {
 	var gb = GameBoy.init(rom)
 	var i = frames
 	while i > 0 {
-		gb = gb.run_frame(GameBoy.no_buttons({}))
+		gb = gb.run_frame(GameBoy.no_input({}))
 		i = i.minus(1)
 	}
 	ppm(gb.framebuffer())

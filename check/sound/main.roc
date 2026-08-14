@@ -81,7 +81,7 @@ render_wav = |rom, frames| {
 	var pcm = List.repeat(0x00.U8, 0)
 	var i = frames
 	while i > 0 {
-		gb = gb.run_frame(GameBoy.no_buttons({}))
+		gb = gb.run_frame(GameBoy.no_input({}))
 		drained = gb.take_samples()
 		gb = drained.gb
 		var j = 0

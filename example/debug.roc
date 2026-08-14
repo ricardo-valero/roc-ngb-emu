@@ -20,7 +20,7 @@ main! = |args| {
     var gb = GameBoy.init(rom)
     var i = parsed.frames
     while i > 0 {
-        gb = gb.run_frame(GameBoy.no_buttons({}))
+        gb = gb.run_frame(GameBoy.no_input({}))
         i = i.minus(1)
     }
     write_view!(parsed.out_dir, "background.ppm", 256, 256, gb.debug_background())?
