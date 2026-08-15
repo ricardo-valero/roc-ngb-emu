@@ -23,14 +23,6 @@ time as per-frame data, IndexedDB on the web. One item remains:
 roc-nes-emu has mostly replayed this repo's roadmap (pure-Roc checks,
 play app, mapper banking), but its CPU verification leapfrogged ours:
 
-- **SM83 SingleStepTests** — the NES `check/single-step` runs Tom
-  Harte's per-opcode JSON vectors (~10k generated cases per opcode)
-  field-by-field through the pure `Cpu.step`, including per-M-cycle bus
-  activity. The same project publishes SM83 vectors; porting the check
-  would verify memory-access *placement* inside instructions — exactly
-  the sub-instruction honesty the wave-RAM access window (the last
-  three informative `dmg_sound` singles, 09/10/12) needs. That turns a
-  documented "skip" into a plannable item.
 - **Mooneye breadth** — our passlist gates 6 ROMs (halt + timer); the
   acceptance suite has ~100 more (PPU timing, OAM DMA, MBC, serial).
   Grow the passlist the way the NES blargg-ppu check does: every ROM
@@ -62,6 +54,14 @@ play app, mapper banking), but its CPU verification leapfrogged ours:
 
 ## Done since the 2026-08-11 list
 
+- SM83 SingleStepTests (2026-08-14, change `sm83-single-step`):
+  `check/single-step` runs all 498 published vector files (1000 cases
+  each) through the new core harness (`GameBoy.from_raw` /
+  `step_instruction` over flat memory) with full memory-access
+  *placement* comparison via the new `Mmu` access trace — HALT and
+  STOP excluded with written reasons. The wave-RAM access window
+  (dmg_sound 09/10/12) is now a plannable item: the instrument that
+  measures sub-instruction placement exists.
 - Battery saves + MBC3 RTC (2026-08-13, change `battery-saves-rtc`):
   the core's `battery`/`with_battery` surface (`.sav` + 44/48-byte RTC
   footer, catch-up on load), `{ buttons, now }` per-frame input, the
