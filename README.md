@@ -101,17 +101,32 @@ upstream ships one `.tar.gz`, which its fetch unpacks with the pure-Roc
 GitHub's release-asset redirects itself:
 
 ```bash
-roc check/blargg/fetch.roc    # once: fetch the Blargg ROMs
-roc check/mooneye/fetch.roc   # once: fetch + unpack the mooneye subset
-roc check/acid2/fetch.roc     # once: fetch dmg-acid2 + cgb-acid2
-roc check/sound/fetch.roc     # once: fetch the sound-check ROM
+roc check/blargg/fetch.roc       # once: fetch the Blargg ROMs
+roc check/mooneye/fetch.roc      # once: fetch + unpack the mooneye subset
+roc check/acid2/fetch.roc        # once: fetch dmg-acid2 + cgb-acid2
+roc check/sound/fetch.roc        # once: fetch the sound-check ROM
+roc check/single-step/fetch.roc  # once: fetch the SM83 SingleStepTests vectors
 
 roc check/run.roc -- check/blargg/passlist    # Blargg: cpu_instrs, timing, dmg_sound
 roc check/run.roc -- check/mooneye/passlist   # timing/halt: mooneye acceptance subset
 roc check/acid2/main.roc                      # PPU: dmg/cgb-acid2 vs golden digests
 roc check/sound/main.roc                      # APU: golden WAV digest of 01-registers
 roc check/battery/main.roc                    # battery/.sav/RTC: synthetic carts, no ROMs
+
+roc check/single-step/main.roc -- check/single-step/data/*.json   # CPU: per-opcode vectors
 ```
+
+The single-step check runs Tom Harte's
+[SingleStepTests](https://github.com/SingleStepTests/sm83) SM83 vectors —
+1000 generated cases per opcode, 498 opcode files — through the core's
+harness surface (`GameBoy.from_raw` / `step_instruction`: raw registers
+in, flat 64 KiB memory, exactly one instruction). Every case diffs
+field-by-field: registers, IME (and the EI-pending latch), touched
+memory, total cycles, and the *ordered memory-access trace* against the
+vector's per-M-cycle bus activity — sub-instruction placement the ROM
+suites can't see. Two files are excluded with reasons printed at run
+time (HALT and STOP, whose stop-state idle M-cycles the batched core
+intentionally doesn't model); the rest gate.
 
 ROM suites gate on the slice's `passlist` (listed ROMs must pass — the set
 never shrinks; the rest report informatively — promote a ROM by adding its

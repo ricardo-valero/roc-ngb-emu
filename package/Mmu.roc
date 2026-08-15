@@ -91,6 +91,8 @@ Mmu := {
     rtc : [None, Rtc(RtcState)], # present on MBC3 Timer carts only
     ram_written : Bool, # battery state touched since RAM was last enabled
     save_events : U64, # bumped on RAM-disable-after-write: the "game just saved" signal
+    layout : [Mapped, Flat], # Flat: raw 64 KiB, no region semantics (single-step harness only)
+    trace : [NoTrace, Trace(List({ addr : U16, val : U8, dir : [Read, Write] }))], # per-access record, harness only
 }.{
     no_buttons : {} -> { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool }
     no_buttons = |_| {
@@ -156,6 +158,8 @@ Mmu := {
             rtc: if type_byte == 0x0F or type_byte == 0x10 { Rtc(rtc_init({})) } else { None },
             ram_written: Bool.False,
             save_events: 0,
+            layout: Mapped,
+            trace: NoTrace,
         }
         # DMG post-boot IO state. LY starts at 0; the PPU advances it for real.
         [
@@ -186,9 +190,37 @@ Mmu := {
             .fold(base, |mmu, (addr, value)| mmu.poke(addr, value))
     }
 
+    # Flat 64 KiB for the single-step harness: no banking, no region
+    # semantics, every address a plain byte. The vectors assume exactly
+    # this, and the access trace is on from birth.
+    flat : List(U8) -> Mmu
+    flat = |image| {
+        sized = image.sublist({ start: 0, len: 0x10000 })
+        mem = sized.concat(List.repeat(0, 0x10000.U64.minus(sized.len())))
+        { ..init([]), mem: mem, layout: Flat, trace: Trace([]) }
+    }
+
+    # Append one access to the trace; free when tracing is off
+    trace_access : Mmu, U16, U8, [Read, Write] -> Mmu
+    trace_access = |mmu, addr, val, dir|
+        match mmu.trace {
+            NoTrace => mmu
+            Trace(list) => { ..mmu, trace: Trace(list.append({ addr: addr, val: val, dir: dir })) }
+        }
+
+    # Read that records itself in the trace — the CPU paths in GameBoy
+    # thread the returned Mmu so access order is honest
+    read_traced : Mmu, U16 -> { mmu : Mmu, value : U8 }
+    read_traced = |mmu, addr| {
+        value = mmu.read(addr)
+        { mmu: mmu.trace_access(addr, value, Read), value: value }
+    }
+
     read : Mmu, U16 -> U8
     read = |mmu, addr|
-        if addr < 0x4000 {
+        if mmu.layout == Flat {
+            mmu.mem.get(addr.to_u64()) ?? 0xFF
+        } else if addr < 0x4000 {
             mmu.rom.get(zero_region_base(mmu).shl_wrap(14).plus(addr.to_u64())) ?? 0xFF
         } else if addr < 0x8000 {
             mmu.rom.get(switch_region_bank(mmu).shl_wrap(14).plus(addr.to_u64().minus(0x4000))) ?? 0xFF
@@ -674,7 +706,9 @@ Mmu := {
 
     write : Mmu, U16, U8 -> Mmu
     write = |mmu, addr, value|
-        if addr < 0x8000 {
+        if mmu.layout == Flat {
+            { ..mmu, mem: mmu.mem.set(addr.to_u64(), value) ?? mmu.mem }
+        } else if addr < 0x8000 {
             write_mbc(mmu, addr, value)
         } else if addr >= 0xA000 and addr < 0xC000 {
             match write_rtc_reg(mmu, value) {
