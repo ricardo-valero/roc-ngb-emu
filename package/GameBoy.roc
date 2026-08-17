@@ -4,6 +4,7 @@
 
 import /Cartridge
 import /Cartridge/Header
+import /Joypad
 import /Cpu/Alu
 import /Cpu/Instruction
 import /Cpu/Register
@@ -71,7 +72,7 @@ GameBoy := {
     # Neutral per-frame input: no buttons, epoch zero. `now` is wall-clock
     # UNIX seconds, entering the pure core as data — a constant here keeps
     # every headless caller deterministic by construction.
-    no_input = |_| { buttons: Bus.no_buttons({}), now: 0.U64 }
+    no_input = |_| { buttons: Joypad.none({}), now: 0.U64 }
 
     # Battery-backed cartridge state as `.sav` bytes: cart RAM sized to
     # the header's declaration, not the internal allocation — the format

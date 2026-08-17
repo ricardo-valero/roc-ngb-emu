@@ -5,14 +5,15 @@
 # https://gbdev.io/pandocs/Memory_Map.html
 
 import /Cartridge
+import /Joypad
+import /Timer
 
 Bus := {
     mem : List(U8),
     cart : Cartridge,
     serial_out : List(U8),
-    div_counter : U64,
-    tima_counter : U64,
-    buttons : { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool },
+    timer : Timer,
+    buttons : Joypad.Buttons,
     apu_events : List(U8), # register-write events (address low byte), power off/on (0xF0/0xF1), drained by the APU
     samples : List(F32), # APU output ring (preallocated: append-in-spread clones, set does not)
     sample_count : U64, # write index into the ring
@@ -39,18 +40,6 @@ Bus := {
     layout : [Mapped, Flat], # Flat: raw 64 KiB, no region semantics (single-step harness only)
     trace : [NoTrace, Trace(List({ addr : U16, val : U8, dir : [Read, Write] }))], # per-access record, harness only
 }.{
-    no_buttons : {} -> { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool }
-    no_buttons = |_| {
-        up: Bool.False,
-        down: Bool.False,
-        left: Bool.False,
-        right: Bool.False,
-        a: Bool.False,
-        b: Bool.False,
-        start: Bool.False,
-        select: Bool.False,
-    }
-
     init : List(U8) -> Bus
     init = |rom| {
         cgb_flag = rom.get(0x0143) ?? 0x00
@@ -75,9 +64,8 @@ Bus := {
             hdma_active: Bool.False,
             opri: 0,
             serial_out: [],
-            div_counter: 0,
-            tima_counter: 0,
-            buttons: no_buttons({}),
+            timer: Timer.init({}),
+            buttons: Joypad.none({}),
             apu_events: [],
             samples: List.repeat(0.0, 16384), # ~5 frames of stereo headroom
             sample_count: 0,
@@ -335,27 +323,10 @@ Bus := {
     set_cart : Bus, Cartridge -> Bus
     set_cart = |bus, cart| { ..bus, cart: cart }
 
-    # P1/JOYP: stored select bits plus the selected group's buttons,
-    # active-low (0 = pressed). Both groups selected AND together.
+    # P1/JOYP: the Joypad unit computes the matrix from the stored select
+    # bits and the per-frame button state
     read_p1 : Bus -> U8
-    read_p1 = |bus| {
-        sel = (bus.mem.get(0xFF00) ?? 0xFF).bitwise_and(0x30)
-        b = bus.buttons
-        dpad = if sel.bitwise_and(0x10) == 0x00 { button_nibble(b.right, b.left, b.up, b.down) } else { 0x0F }
-        actions = if sel.bitwise_and(0x20) == 0x00 { button_nibble(b.a, b.b, b.select, b.start) } else { 0x0F }
-        U8.bitwise_or(0xC0, sel).bitwise_or(dpad.bitwise_and(actions))
-    }
-
-    # bits 0-3, low when pressed
-    button_nibble : Bool, Bool, Bool, Bool -> U8
-    button_nibble = |b0, b1, b2, b3|
-        button_bit(b0, 0x01)
-            .bitwise_or(button_bit(b1, 0x02))
-            .bitwise_or(button_bit(b2, 0x04))
-            .bitwise_or(button_bit(b3, 0x08))
-
-    button_bit : Bool, U8 -> U8
-    button_bit = |pressed, mask| if pressed { 0x00 } else { mask }
+    read_p1 = |bus| Joypad.p1(bus.buttons, bus.mem.get(0xFF00) ?? 0xFF)
 
     # Unmasked register byte for internal components (the APU must see the
     # real written values, not the CPU-facing read-back masks)
@@ -500,7 +471,7 @@ Bus := {
                 bus.poke(addr, value)
             }
         } else if addr == 0xFF04 {
-            { ..bus, div_counter: 0 }.poke(addr, 0x00) # DIV: any write resets
+            { ..bus, timer: bus.timer.reset_div() }.poke(addr, 0x00) # DIV: any write resets
         } else if addr == 0xFF00 {
             bus.poke(addr, value.bitwise_and(0x30).bitwise_or(0xC0)) # only the select bits stick
         } else if addr == 0xFF46 {
@@ -527,47 +498,25 @@ Bus := {
     request_interrupt = |bus, bit|
         bus.poke(0xFF0F, bus.read(0xFF0F).bitwise_or(U8.shl_wrap(1, bit)))
 
-    # Advance DIV/TIMA by elapsed T-cycles; TIMA overflow reloads TMA and
-    # raises the timer interrupt (IF bit 2)
+    # Advance DIV/TIMA by elapsed T-cycles: the Timer unit does the
+    # arithmetic; the bus applies its register pokes and raises the
+    # timer interrupt (IF bit 2)
     tick : Bus, U64 -> Bus
     tick = |bus, cycles| {
-        div_total = bus.div_counter.plus(cycles)
-        div_incs = div_total // 256
-        with_div =
-            if div_incs > 0 {
-                div = bus.read(0xFF04)
-                { ..bus, div_counter: div_total % 256 }.poke(0xFF04, div.plus_wrap(div_incs.to_u8_wrap()))
-            } else {
-                { ..bus, div_counter: div_total }
+        regs = { div: bus.read_raw(0xFF04), tac: bus.read_raw(0xFF07), tima: bus.read_raw(0xFF05), tma: bus.read_raw(0xFF06) }
+        r = bus.timer.tick(regs, cycles)
+        b1 = { ..bus, timer: r.timer }
+        b2 =
+            match r.div {
+                Set(v) => b1.poke(0xFF04, v)
+                Unchanged => b1
             }
-        tac = with_div.read(0xFF07)
-        if tac.bitwise_and(0x04) == 0x00 {
-            with_div
-        } else {
-            period =
-                match tac.bitwise_and(0x03) {
-                    0 => 1024
-                    1 => 16
-                    2 => 64
-                    _ => 256
-                }
-            tima_total = with_div.tima_counter.plus(cycles)
-            tima_incs = tima_total // period
-            advanced = { ..with_div, tima_counter: tima_total % period }
-            if tima_incs == 0 {
-                advanced
-            } else {
-                sum = advanced.read(0xFF05).to_u64().plus(tima_incs)
-                if sum > 0xFF {
-                    # Overflow: reload from TMA (wrap the excess through the reload value)
-                    tma = advanced.read(0xFF06).to_u64()
-                    reloaded = tma.plus(sum.minus(0x100) % U64.minus(0x100, tma))
-                    advanced.poke(0xFF05, reloaded.to_u8_wrap()).request_interrupt(2)
-                } else {
-                    advanced.poke(0xFF05, sum.to_u8_wrap())
-                }
+        b3 =
+            match r.tima {
+                Set(v) => b2.poke(0xFF05, v)
+                Unchanged => b2
             }
-        }
+        if r.irq { b3.request_interrupt(2) } else { b3 }
     }
 }
 
@@ -622,20 +571,20 @@ expect {
 
 # Joypad: select a group, read its buttons active-low
 expect {
-    m = Bus.init(test_rom).set_buttons({ ..Bus.no_buttons({}), a: Bool.True }).write(0xFF00, 0x10)
+    m = Bus.init(test_rom).set_buttons({ ..Joypad.none({}), a: Bool.True }).write(0xFF00, 0x10)
     m.read(0xFF00).bitwise_and(0x0F) == 0x0E
 }
 expect {
-    m = Bus.init(test_rom).set_buttons({ ..Bus.no_buttons({}), down: Bool.True }).write(0xFF00, 0x20)
+    m = Bus.init(test_rom).set_buttons({ ..Joypad.none({}), down: Bool.True }).write(0xFF00, 0x20)
     m.read(0xFF00).bitwise_and(0x0F) == 0x07
 }
 # Both groups selected AND together; none selected reads 0xF
 expect {
-    m = Bus.init(test_rom).set_buttons({ ..Bus.no_buttons({}), a: Bool.True, down: Bool.True }).write(0xFF00, 0x00)
+    m = Bus.init(test_rom).set_buttons({ ..Joypad.none({}), a: Bool.True, down: Bool.True }).write(0xFF00, 0x00)
     m.read(0xFF00).bitwise_and(0x0F) == 0x06
 }
 expect {
-    m = Bus.init(test_rom).set_buttons({ ..Bus.no_buttons({}), a: Bool.True, down: Bool.True }).write(0xFF00, 0x30)
+    m = Bus.init(test_rom).set_buttons({ ..Joypad.none({}), a: Bool.True, down: Bool.True }).write(0xFF00, 0x30)
     m.read(0xFF00).bitwise_and(0x0F) == 0x0F
 }
 
@@ -886,7 +835,7 @@ expect Bus.init(test_rom).write(0xFF55, 0x00).read(0xFF55) == 0xFF
 expect Bus.init(test_rom).read(0xFF51) == 0xFF
 
 rtc_input : U64 -> { buttons : { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool }, now : U64 }
-rtc_input = |n| { buttons: Bus.no_buttons({}), now: n }
+rtc_input = |n| { buttons: Joypad.none({}), now: n }
 
 # MBC3 RTC: first latch only syncs (no jump from epoch 0); the next
 # latch advances by elapsed wall time; reads without a new latch are stale

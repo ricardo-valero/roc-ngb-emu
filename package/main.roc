@@ -12,3 +12,5 @@ import Cpu/Instruction
 import Cpu/Register
 import Cpu/Register/Status
 import Bus
+import Joypad
+import Timer
