@@ -29,6 +29,10 @@ that exercise the core).
 
 ## Hardware map
 
+A block diagram of the console — what is wired to what, with each block
+labeled by the module that plays it — lives at
+[`docs/hardware-map.html`](docs/hardware-map.html) (open it in a browser).
+
 Two views, deliberately different: the module tree encodes *ownership*
 (who holds which state and who may touch it), while the physical SoC
 boundary lives in `GameBoy.roc` — the composition module **is** the

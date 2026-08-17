@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Game Boy (DMG) — what's wired to what</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --paper:   #f5f5f5;
+    --ink:     #2d3142;
+    --muted:   #4f5d75;
+    --soft:    #7a8399;
+    --accent:  #eb6c36;
+    --accent-tint: rgba(235,108,54,0.08);
+    --link:    #2e5aa8;
+    --rule:    rgba(45,49,66,0.12);
+    --zone-fill: rgba(45,49,66,0.02);
+    --zone-stroke: rgba(45,49,66,0.10);
+    --store-fill: rgba(45,49,66,0.05);
+    --ext-fill: rgba(45,49,66,0.03);
+    --ext-stroke: rgba(45,49,66,0.30);
+    --user-fill: rgba(79,93,117,0.10);
+    --node-fill: #ffffff;
+    --card-fill: #ffffff;
+    --font-sans: 'Geist', system-ui, sans-serif;
+    --font-serif: 'Instrument Serif', Georgia, serif;
+    --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:   #2d3142;
+      --ink:     #f5f5f5;
+      --muted:   #aab3c5;
+      --soft:    #8b94a9;
+      --accent:  #f08a59;
+      --accent-tint: rgba(240,138,89,0.10);
+      --link:    #82a7e8;
+      --rule:    rgba(245,245,245,0.14);
+      --zone-fill: rgba(245,245,245,0.02);
+      --zone-stroke: rgba(245,245,245,0.10);
+      --store-fill: rgba(245,245,245,0.05);
+      --ext-fill: rgba(245,245,245,0.03);
+      --ext-stroke: rgba(245,245,245,0.30);
+      --user-fill: rgba(170,179,197,0.10);
+      --node-fill: #363b50;
+      --card-fill: #363b50;
+    }
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--paper);
+    color: var(--ink);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 3rem 2rem;
+  }
+  .frame { max-width: 1160px; width: 100%; }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.66rem; font-weight: 500;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 0.5rem;
+  }
+  h1 {
+    font-family: var(--font-serif);
+    font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+    font-weight: 400; letter-spacing: -0.02em; line-height: 1.15;
+    margin-bottom: 0.5rem; text-wrap: balance;
+  }
+  .subtitle { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.5rem; max-width: 62ch; }
+  .diagram-wrap { overflow-x: auto; }
+  svg { width: 100%; min-width: 900px; display: block; }
+
+  .mask   { fill: var(--paper); }
+  .zone   { fill: var(--zone-fill); stroke: var(--zone-stroke); stroke-width: 0.8; }
+  .zlbl   { fill: var(--soft); font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.1em; }
+  .nodebg { fill: var(--node-fill); stroke: var(--ink); stroke-width: 1; }
+  .store  { fill: var(--store-fill); stroke: var(--muted); stroke-width: 1; }
+  .ext    { fill: var(--ext-fill); stroke: var(--ext-stroke); stroke-width: 1; }
+  .user   { fill: var(--user-fill); stroke: var(--soft); stroke-width: 1; }
+  .focal  { fill: var(--accent-tint); stroke: var(--accent); stroke-width: 1.2; }
+  .tag    { fill: transparent; stroke: var(--soft); stroke-width: 0.8; }
+  .tagt   { fill: var(--muted); font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.08em; }
+  .name   { fill: var(--ink); font-family: var(--font-sans); font-size: 12px; font-weight: 600; }
+  .sub    { fill: var(--muted); font-family: var(--font-mono); font-size: 9px; }
+  .wire   { stroke: var(--muted); stroke-width: 1; fill: none; }
+  .wire-main { stroke: var(--muted); stroke-width: 1.2; fill: none; }
+  .wire-blue { stroke: var(--link); stroke-width: 1.2; fill: none; }
+  .dashed { stroke-dasharray: 4,3; stroke-width: 1; }
+  .dot    { fill: var(--muted); }
+  .albl   { fill: var(--soft); font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.06em; }
+  .m-ink  { fill: var(--muted); }
+  .m-link { fill: var(--link); }
+  .hair   { stroke: var(--rule); stroke-width: 0.8; }
+
+  .cards { display: grid; grid-template-columns: 1.1fr 1fr 0.9fr; gap: 1rem; margin-top: 2rem; }
+  @media (max-width: 800px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card-fill);
+    border: 1px solid var(--rule);
+    border-radius: 6px; padding: 1.25rem;
+  }
+  .card .eyebrow { margin-bottom: 0.75rem; }
+  .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .card-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .card-dot.coral { background: var(--accent); }
+  .card-dot.slate { background: var(--muted); }
+  .card-dot.blue  { background: var(--link); }
+  .card h3 { font-size: 0.9rem; font-weight: 600; }
+  .card ul { list-style: none; }
+  .card li { font-size: 0.8rem; color: var(--muted); padding: 0.3rem 0; border-top: 1px solid var(--rule); line-height: 1.45; }
+  .card li:first-child { border-top: none; }
+  .card code { font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink); }
+  footer {
+    margin-top: 2.5rem; padding-top: 1rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--font-mono); font-size: 0.66rem;
+    letter-spacing: 0.08em; color: var(--soft);
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+  <p class="eyebrow">Architecture · roc-ngb-emu</p>
+  <h1>Game Boy (DMG) — what's wired to what</h1>
+  <p class="subtitle">The console is one SM83 core talking to everything over a single 16-bit address / 8-bit data bus. Each block is labeled with the <code>package/</code> module that plays that chip.</p>
+
+  <div class="diagram-wrap">
+  <svg viewBox="0 0 1000 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="gb-block-title gb-block-desc">
+    <title id="gb-block-title">Game Boy DMG hardware block diagram mapped to roc-ngb-emu modules</title>
+    <desc id="gb-block-desc">The SM83 CPU, timer and joypad peripherals, APU and PPU sit inside the DMG-CPU system-on-chip and reach WRAM, VRAM and the cartridge through one shared address and data bus; the PPU also has a dedicated pixel-fetch port into VRAM, and the host frontend exchanges frames, PCM audio and button state with the console. Each block names the roc-ngb-emu module that implements it.</desc>
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon class="m-ink" points="0 0, 8 3, 0 6"/></marker>
+      <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon class="m-link" points="0 0, 8 3, 0 6"/></marker>
+    </defs>
+
+    <rect width="100%" height="100%" class="mask"/>
+
+    <rect x="40" y="40" width="696" height="176" rx="8" class="zone"/>
+    <rect x="52" y="44" width="152" height="12" rx="2" class="mask"/>
+    <text x="56" y="53" class="zlbl">DMG-CPU SOC · GameBoy.roc</text>
+
+    <rect x="40" y="408" width="696" height="120" rx="8" class="zone"/>
+    <rect x="52" y="412" width="168" height="12" rx="2" class="mask"/>
+    <text x="56" y="421" class="zlbl">EXTERNAL MEMORY &amp; CART BUS</text>
+
+    <rect x="760" y="72" width="208" height="160" rx="8" class="zone"/>
+    <rect x="772" y="76" width="72" height="12" rx="2" class="mask"/>
+    <text x="776" y="85" class="zlbl">HOST · app/</text>
+
+    <path d="M 272,96 V 72 Q 272,64 264,64 H 180 Q 172,64 172,72 V 96" class="wire dashed" marker-end="url(#arrow)"/>
+    <rect x="208" y="44" width="32" height="12" rx="2" class="mask"/>
+    <text x="224" y="53" class="albl" text-anchor="middle">IRQ</text>
+
+    <path d="M 136,168 V 320" class="wire-main" marker-end="url(#arrow)"/>
+    <rect x="148" y="232" width="64" height="12" rx="2" class="mask"/>
+    <text x="180" y="241" class="albl" text-anchor="middle">FETCH·R/W</text>
+
+    <path d="M 304,168 V 320" class="wire"/><circle cx="304" cy="320" r="2.5" class="dot"/>
+    <path d="M 472,168 V 320" class="wire"/><circle cx="472" cy="320" r="2.5" class="dot"/>
+    <path d="M 656,168 V 320" class="wire"/><circle cx="656" cy="320" r="2.5" class="dot"/>
+    <path d="M 136,352 V 440" class="wire"/><circle cx="136" cy="352" r="2.5" class="dot"/>
+    <path d="M 344,352 V 440" class="wire"/><circle cx="344" cy="352" r="2.5" class="dot"/>
+    <path d="M 656,352 V 440" class="wire"/><circle cx="656" cy="352" r="2.5" class="dot"/>
+
+    <path d="M 608,168 V 440" class="wire dashed" marker-end="url(#arrow)"/>
+    <rect x="520" y="192" width="80" height="12" rx="2" class="mask"/>
+    <text x="560" y="201" class="albl" text-anchor="middle">PIXEL FETCH</text>
+
+    <path d="M 712,128 H 784" class="wire-blue" marker-end="url(#arrow-link)"/>
+    <rect x="728" y="108" width="40" height="12" rx="2" class="mask"/>
+    <text x="748" y="117" class="albl" text-anchor="middle">FRAME</text>
+
+    <path d="M 520,96 V 72 Q 520,64 528,64 H 856 Q 864,64 864,72 V 104" class="wire-blue" marker-end="url(#arrow-link)"/>
+    <rect x="656" y="44" width="64" height="12" rx="2" class="mask"/>
+    <text x="688" y="53" class="albl" text-anchor="middle">PCM 48KHZ</text>
+
+    <path d="M 824,200 V 320 Q 824,328 816,328 H 720" class="wire-blue" marker-end="url(#arrow-link)"/>
+    <rect x="836" y="252" width="88" height="12" rx="2" class="mask"/>
+    <text x="880" y="261" class="albl" text-anchor="middle">BUTTONS · NOW</text>
+
+    <rect x="64" y="96" width="144" height="72" rx="6" class="mask"/>
+    <rect x="64" y="96" width="144" height="72" rx="6" class="focal"/>
+    <rect x="72" y="104" width="32" height="12" rx="2" class="tag"/>
+    <text x="88" y="113" class="tagt" text-anchor="middle">CPU</text>
+    <text x="136" y="140" class="name" text-anchor="middle">SM83 core</text>
+    <text x="136" y="156" class="sub" text-anchor="middle">Cpu/* · GameBoy.roc</text>
+
+    <rect x="232" y="96" width="144" height="72" rx="6" class="mask"/>
+    <rect x="232" y="96" width="144" height="72" rx="6" class="nodebg"/>
+    <rect x="240" y="104" width="36" height="12" rx="2" class="tag"/>
+    <text x="258" y="113" class="tagt" text-anchor="middle">REGS</text>
+    <text x="304" y="136" class="name" text-anchor="middle">Peripherals</text>
+    <text x="304" y="151" class="sub" text-anchor="middle">Timer.roc · Joypad.roc</text>
+    <text x="304" y="163" class="sub" text-anchor="middle">SB·SC IF·IE in Bus.roc</text>
+
+    <rect x="400" y="96" width="144" height="72" rx="6" class="mask"/>
+    <rect x="400" y="96" width="144" height="72" rx="6" class="nodebg"/>
+    <rect x="408" y="104" width="32" height="12" rx="2" class="tag"/>
+    <text x="424" y="113" class="tagt" text-anchor="middle">APU</text>
+    <text x="472" y="140" class="name" text-anchor="middle">Sound unit</text>
+    <text x="472" y="156" class="sub" text-anchor="middle">Apu.roc · 4ch + wave</text>
+
+    <rect x="568" y="96" width="144" height="72" rx="6" class="mask"/>
+    <rect x="568" y="96" width="144" height="72" rx="6" class="nodebg"/>
+    <rect x="576" y="104" width="32" height="12" rx="2" class="tag"/>
+    <text x="592" y="113" class="tagt" text-anchor="middle">PPU</text>
+    <text x="640" y="140" class="name" text-anchor="middle">Pixel unit</text>
+    <text x="640" y="156" class="sub" text-anchor="middle">Ppu.roc · 160×144</text>
+
+    <rect x="64" y="320" width="648" height="32" rx="6" class="mask"/>
+    <rect x="64" y="320" width="648" height="32" rx="6" class="focal"/>
+    <text x="388" y="334" class="name" text-anchor="middle">Address / data bus</text>
+    <text x="388" y="346" class="sub" text-anchor="middle">Bus.roc · read/write · 0x0000–0xFFFF</text>
+
+    <rect x="64" y="440" width="144" height="72" rx="6" class="mask"/>
+    <rect x="64" y="440" width="144" height="72" rx="6" class="store"/>
+    <rect x="72" y="448" width="36" height="12" rx="2" class="tag"/>
+    <text x="90" y="457" class="tagt" text-anchor="middle">SRAM</text>
+    <text x="136" y="484" class="name" text-anchor="middle">WRAM + HRAM</text>
+    <text x="136" y="500" class="sub" text-anchor="middle">Bus: mem · wram_hi</text>
+
+    <rect x="240" y="440" width="208" height="72" rx="6" class="mask"/>
+    <rect x="240" y="440" width="208" height="72" rx="6" class="ext"/>
+    <rect x="248" y="448" width="36" height="12" rx="2" class="tag"/>
+    <text x="266" y="457" class="tagt" text-anchor="middle">CART</text>
+    <text x="344" y="484" class="name" text-anchor="middle">Cartridge</text>
+    <text x="344" y="500" class="sub" text-anchor="middle">rom · MBC1/3/5 · ram · RTC</text>
+
+    <rect x="568" y="440" width="144" height="72" rx="6" class="mask"/>
+    <rect x="568" y="440" width="144" height="72" rx="6" class="store"/>
+    <rect x="576" y="448" width="36" height="12" rx="2" class="tag"/>
+    <text x="594" y="457" class="tagt" text-anchor="middle">SRAM</text>
+    <text x="640" y="484" class="name" text-anchor="middle">VRAM + OAM</text>
+    <text x="640" y="500" class="sub" text-anchor="middle">Bus: mem · vram1</text>
+
+    <rect x="784" y="104" width="160" height="96" rx="6" class="mask"/>
+    <rect x="784" y="104" width="160" height="96" rx="6" class="user"/>
+    <rect x="792" y="112" width="32" height="12" rx="2" class="tag"/>
+    <text x="808" y="121" class="tagt" text-anchor="middle">APP</text>
+    <text x="864" y="148" class="name" text-anchor="middle">Host frontend</text>
+    <text x="864" y="164" class="sub" text-anchor="middle">app/ray.roc · app/web</text>
+    <text x="864" y="180" class="sub" text-anchor="middle">‹rom›.sav ↔ battery</text>
+
+    <line x1="40" y1="592" x2="960" y2="592" class="hair"/>
+    <text x="40" y="609" class="albl" letter-spacing="0.14em">LEGEND</text>
+    <path d="M 120,604 H 148" class="wire-main" marker-end="url(#arrow)"/>
+    <text x="160" y="608" class="albl">CPU R/W</text>
+    <path d="M 280,604 H 312" class="wire"/><circle cx="312" cy="604" r="2.5" class="dot"/>
+    <text x="324" y="608" class="albl">BUS TAP (MMIO)</text>
+    <path d="M 500,604 H 532" class="wire dashed"/>
+    <text x="544" y="608" class="albl">SIDE CHANNEL (IRQ · PIXEL PORT)</text>
+    <path d="M 760,604 H 792" class="wire-blue" marker-end="url(#arrow-link)"/>
+    <text x="804" y="608" class="albl">HOST I/O</text>
+  </svg>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <p class="eyebrow">Chip → module</p>
+      <div class="card-header"><span class="card-dot coral"></span><h3>Who plays what</h3></div>
+      <ul>
+        <li>SM83 core → <code>Cpu/Register</code>, <code>Cpu/Alu</code>, <code>Cpu/Instruction</code>; the fetch–decode–execute loop lives in <code>GameBoy.roc</code></li>
+        <li>Address/data bus + WRAM/VRAM/HRAM + the I/O page → <code>Bus.roc</code></li>
+        <li>Timer → <code>Timer.roc</code> · joypad → <code>Joypad.roc</code> (pure units; the bus owns their register bytes)</li>
+        <li>PPU → <code>Ppu.roc</code> · APU → <code>Apu.roc</code></li>
+        <li>Cartridge (ROM, MBC banking, save RAM, RTC) → <code>Cartridge.roc</code> + <code>Cartridge/Header.roc</code></li>
+        <li>LCD, speaker, buttons, battery → <code>app/ray.roc</code> and <code>app/web/</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <p class="eyebrow">Hardware truths</p>
+      <div class="card-header"><span class="card-dot slate"></span><h3>Why one bus explains it</h3></div>
+      <ul>
+        <li>Every component except the CPU is memory-mapped: the CPU configures the PPU, APU and timers by writing registers on the same bus it fetches code from</li>
+        <li>CPU registers are the exception — internal to the core, unreachable from the bus, which is why they get their own module</li>
+        <li>The PPU owns a second port into VRAM/OAM — during pixel transfer (mode 3) it locks the CPU out</li>
+        <li>Interrupts (VBlank, STAT, timer, serial, joypad) are the only other cross-wires into the CPU</li>
+        <li>The cartridge is not passive: its MBC chip decodes ROM writes as bank-switch commands</li>
+      </ul>
+    </div>
+    <div class="card">
+      <p class="eyebrow">Emulator deltas</p>
+      <div class="card-header"><span class="card-dot blue"></span><h3>Where the code bends it</h3></div>
+      <ul>
+        <li>The PPU's dedicated VRAM port is not modeled: it reads through <code>Bus.read</code> / <code>Bus.read_vram</code> like everyone else</li>
+        <li>The APU's analog output becomes 48 kHz stereo F32 pushed into a ring buffer the bus owns</li>
+        <li>OAM and the peripheral register bytes live in the bus's flat <code>mem</code>, not inside the units that own them physically</li>
+        <li>No boot ROM — the core starts from documented post-boot state</li>
+        <li>Wall-clock time and buttons enter as per-frame data: <code>run_frame({ buttons, now })</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>ROC-NGB-EMU · DMG BLOCK DIAGRAM · SOURCE: PACKAGE/ MODULES + PAN DOCS</footer>
+</div>
+</body>
+</html>
