@@ -14,7 +14,7 @@ import web.App
 import web.Host
 import ngb.GameBoy
 
-Model : { gb : Box(GameBoy), frames : U64, save_seen : U64 }
+Model : { gb : Box(GameBoy), frames : U64, save_seen : U64, last_sav : List(U8), sav_note : Str }
 
 program = { init, render! }
 
@@ -27,8 +27,19 @@ init = App.init(
         # CGB LCD curve; grays are fixed points, so DMG output is untouched
         .with_color_correction(Cgb),
     # sav is the page's stored battery bytes for this cartridge (empty on
-    # a clean start); with_battery no-ops for batteryless carts
-    |rom, sav| { gb: Box.box(GameBoy.init(rom).with_battery(sav)), frames: 0, save_seen: 0 },
+    # a clean start); with_battery loads forgivingly, but a size mismatch
+    # is noted and logged on the first frame instead of passing silently.
+    # state is the save-state channel — unused until the core can decode one.
+    |rom, sav, _state| {
+        fresh = GameBoy.init(rom)
+        note =
+            match fresh.battery_fit(sav) {
+                Short(missing) => "sav is ${missing.to_str()} bytes short of the declared RAM — padded with zeros"
+                Long(extra) => "sav is ${extra.to_str()} bytes over the declared RAM — extra ignored"
+                _ => "" # NoBattery / Empty / Exact: nothing to surface
+            }
+        { gb: Box.box(fresh.with_battery(sav)), frames: 0, save_seen: 0, last_sav: [], sav_note: note }
+    },
 )
 
 render! : Model, Host => Model
@@ -45,11 +56,41 @@ render! = |model, host| {
     }
     ran = Box.unbox(model.gb).run_frame({ buttons: buttons, now: host.unix_time() })
     drained = ran.take_samples()
-    # Battery bytes out every frame so the page always holds current save
-    # state (it persists on tab-hide); the flush flag marks the "game just
-    # saved" edge for an immediate write. Empty for batteryless carts.
+    # Battery bytes out on the "game just saved" edge (RAM disabled after a
+    # write — flush now) plus a ~1 s debounced dirty check without flush,
+    # keeping the page's tab-hide copy fresh. The page retains the last
+    # push, so per-frame pushing (a full cart-RAM copy across the wasm
+    # boundary each frame) buys nothing. Batteryless carts never push:
+    # battery() is empty and stays equal to last_sav.
     events = drained.gb.save_events()
-    host.push_battery!(drained.gb.battery(), events != model.save_seen)
+    saved_edge = events != model.save_seen
+    last_sav =
+        if saved_edge {
+            sav = drained.gb.battery()
+            # batteryless carts with RAM can still hit the disable edge;
+            # battery() is empty for them — nothing to persist
+            if sav.len() > 0 {
+                host.push_battery!(sav, Bool.True)
+                sav
+            } else {
+                model.last_sav
+            }
+        } else if model.frames % 64 == 63 {
+            sav = drained.gb.battery()
+            if sav != model.last_sav {
+                host.push_battery!(sav, Bool.False)
+                sav
+            } else {
+                model.last_sav
+            }
+        } else {
+            model.last_sav
+        }
+    if model.frames == 0 and model.sav_note != "" {
+        host.log!("[battery] ${model.sav_note}")
+    } else {
+        {}
+    }
     # Once a second, log the machine state the way a debugger would ask
     # for it — the fastest answer to "why is the screen blank"
     if model.frames % 60 == 0 {
@@ -59,7 +100,7 @@ render! = |model, host| {
     }
     host.blit!(rgba(drained.gb.framebuffer()))
     host.queue_audio!(drained.samples)
-    { gb: Box.box(drained.gb), frames: model.frames + 1, save_seen: events }
+    { gb: Box.box(drained.gb), frames: model.frames + 1, save_seen: events, last_sav, sav_note: model.sav_note }
 }
 
 hex4 : U16 -> Str

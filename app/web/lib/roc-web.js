@@ -8,7 +8,7 @@
 import { attachKeys } from './key-input.js';
 import { attachFileInput } from './file-input.js';
 import { createAudio } from './audio.js';
-import { createSaveStore, romKey } from './save-store.js';
+import { createSaveStore, romKey, legacyRomKey } from './save-store.js';
 
 const BACKENDS = { 1: 'webgpu', 2: 'webgl', 3: 'canvas2d' };
 
@@ -43,8 +43,9 @@ async function run(wasmUrl, opts, status, canvas) {
   const audio = await createAudio();
   let hasAudio = false;
 
-  // Battery saves: the app pushes current `.sav` bytes each frame; flush=1
-  // marks a "game just saved" moment (persist now). The retained copy also
+  // Battery saves: the app pushes `.sav` bytes whenever they may have
+  // changed (per-frame pushing works but is unnecessary); flush=1 marks a
+  // "game just saved" moment (persist now). The retained copy also
   // persists when the tab hides, covering writes the game never flushed.
   const saves = await createSaveStore();
   let saveKey = null;
@@ -63,6 +64,10 @@ async function run(wasmUrl, opts, status, canvas) {
     js_battery_push: (p, l, flush) => {
       lastBattery = new Uint8Array(memory.buffer, p, l).slice();
       if (flush && saveKey) saves.save(saveKey, lastBattery);
+    },
+    // Save states persist immediately: an explicit user action, no debounce
+    js_state_push: (p, l) => {
+      if (saveKey) saves.save(`${saveKey}:state`, new Uint8Array(memory.buffer, p, l).slice());
     },
   };
   const instance = await WebAssembly.instantiate(module, { env });
@@ -92,17 +97,29 @@ async function run(wasmUrl, opts, status, canvas) {
   const loadBytes = async (bytes) => {
     if (bytes.length > x.rom_max_len()) throw new Error('file exceeds rom_max_len');
     saveKey = romKey(bytes);
-    const sav = (await saves.load(saveKey)) ?? new Uint8Array(0);
+    let sav = await saves.load(saveKey);
+    if (!sav) {
+      // one-time migration from the pre-content-hash key
+      const old = await saves.load(legacyRomKey(bytes));
+      if (old) {
+        saves.save(saveKey, old);
+        sav = old;
+      }
+    }
+    sav = sav ?? new Uint8Array(0);
+    const state = (await saves.load(`${saveKey}:state`)) ?? new Uint8Array(0);
     const savLen = Math.min(sav.length, x.sav_max_len());
+    const stateLen = Math.min(state.length, x.state_max_len());
     new Uint8Array(memory.buffer, x.rom_ptr(), bytes.length).set(bytes);
     new Uint8Array(memory.buffer, x.sav_ptr(), savLen).set(sav.subarray(0, savLen));
+    new Uint8Array(memory.buffer, x.state_ptr(), stateLen).set(state.subarray(0, stateLen));
     lastBattery = null;
-    if (x.init(bytes.length, savLen) !== 0) throw new Error('init failed');
+    if (x.init(bytes.length, savLen, stateLen) !== 0) throw new Error('init failed');
   };
   if (opts.rom) {
     await loadBytes(new Uint8Array(await (await fetch(opts.rom)).arrayBuffer()));
   } else {
-    x.init(0, 0);
+    x.init(0, 0, 0);
   }
 
   // Tab hidden (switch, close attempt): persist the retained bytes — unload

@@ -1,14 +1,32 @@
 // IndexedDB store for battery-backed cartridge saves (`.sav` bytes).
 //
-// Keys are cartridge identity — header title + global checksum — not
-// filenames, so the default fetched ROM and a dropped copy of the same
-// game share one save, and dropped files (which have no stable path)
-// still key stably.
+// Keys are a content hash (64-bit FNV-1a) of the full ROM bytes — no
+// console format assumptions, so any cartridge keys stably: the default
+// fetched ROM and a dropped copy of the same game share one save, and
+// dropped files (which have no stable path) still key deterministically.
+// Distinct games can no longer collide the way the old GB-header key
+// (title + global checksum, garbage offsets for non-GB ROMs) could.
+//
+// The stored bytes are opaque to the platform and persisted verbatim —
+// consoles may append trailers (e.g. the GB RTC footer) and get them back.
 
 const DB_NAME = 'roc-web-saves';
 const STORE = 'saves';
 
 export function romKey(bytes) {
+  let h = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let i = 0; i < bytes.length; i++) {
+    h ^= BigInt(bytes[i]);
+    h = (h * prime) & mask;
+  }
+  return `fnv-${h.toString(16).padStart(16, '0')}`;
+}
+
+// The pre-content-hash key (GB header title + global checksum). Kept only
+// so existing saves migrate to the new key on first load.
+export function legacyRomKey(bytes) {
   let title = '';
   for (let i = 0x134; i <= 0x143 && i < bytes.length; i++) {
     const c = bytes[i];
