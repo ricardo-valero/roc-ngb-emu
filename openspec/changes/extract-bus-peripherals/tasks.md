@@ -45,5 +45,5 @@
       (`instr_timing`, `dmg_sound` exercise the timer paths)
 - [x] 4.4 `roc check/battery/main.roc` and `roc check/acid2/main.roc` pass;
       single-step spot-check (e.g. `00`, `3e`, `f0`) green
-- [ ] 4.5 Build `app/ray.roc` and boot a game to confirm input still works
+- [x] 4.5 Build `app/ray.roc` and boot a game to confirm input still works
       (buttons through the renamed bus)
