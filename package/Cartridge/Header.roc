@@ -335,6 +335,7 @@ map_checksum = |value, data| {
     }
 }
 
+map_destination : List(U8) -> [Some(Str), Unknown]
 map_destination = |bytes|
     match bytes {
         [0x00] => Some("Japan (and possibly overseas)")

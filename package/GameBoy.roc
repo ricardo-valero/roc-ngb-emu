@@ -2,13 +2,14 @@
 # `step` is pure state -> state; cycles are reported by execute because only
 # it knows conditional outcomes (taken vs. not-taken).
 
+import /Cartridge
 import /Cartridge/Header
 import /Cpu/Alu
 import /Cpu/Instruction
 import /Cpu/Register
 import /Cpu/Register/Status
 import /Apu
-import /Mmu
+import /Bus
 import /Ppu
 
 # Raw machine state for the single-step harness: every register, IME, and
@@ -17,7 +18,7 @@ SingleStep : { pc : U16, sp : U16, a : U8, b : U8, c : U8, d : U8, e : U8, f : U
 
 GameBoy := {
     reg : Register,
-    mmu : Mmu,
+    bus : Bus,
     ppu : Ppu,
     apu : Apu,
     ime : Bool,
@@ -30,7 +31,7 @@ GameBoy := {
         gb : GameBoy
         gb = {
             reg: Register.init({}),
-            mmu: Mmu.init(rom),
+            bus: Bus.init(rom),
             ppu: Ppu.init({}),
             apu: Apu.init({}),
             ime: Bool.False,
@@ -39,7 +40,7 @@ GameBoy := {
             breakpoint: None,
         }
         # CGB carts boot with A = 0x11 — how games detect the console
-        if gb.mmu.is_cgb() {
+        if gb.bus.is_cgb() {
             { ..gb, reg: gb.reg.write8(Accumulator, 0x11) }
         } else {
             gb
@@ -47,11 +48,11 @@ GameBoy := {
     }
 
     serial : GameBoy -> List(U8)
-    serial = |gb| gb.mmu.serial()
+    serial = |gb| gb.bus.serial()
 
     # Bus read for harnesses (e.g. Blargg's memory-reporting test protocol)
     peek : GameBoy, U16 -> U8
-    peek = |gb, addr| gb.mmu.read(addr)
+    peek = |gb, addr| gb.bus.read(addr)
 
     framebuffer : GameBoy -> List(U16)
     framebuffer = |gb| gb.ppu.frame()
@@ -59,18 +60,18 @@ GameBoy := {
     # Debug renders (see Ppu): 256x256 background map, 128x192 tile sheet,
     # 64x80 OAM grid — RGB555 pixels, blittable by any host
     debug_background : GameBoy -> List(U16)
-    debug_background = |gb| Ppu.debug_background(gb.mmu)
+    debug_background = |gb| Ppu.debug_background(gb.bus)
 
     debug_tiles : GameBoy -> List(U16)
-    debug_tiles = |gb| Ppu.debug_tiles(gb.mmu)
+    debug_tiles = |gb| Ppu.debug_tiles(gb.bus)
 
     debug_oam : GameBoy -> List(U16)
-    debug_oam = |gb| Ppu.debug_oam(gb.mmu)
+    debug_oam = |gb| Ppu.debug_oam(gb.bus)
 
     # Neutral per-frame input: no buttons, epoch zero. `now` is wall-clock
     # UNIX seconds, entering the pure core as data — a constant here keeps
     # every headless caller deterministic by construction.
-    no_input = |_| { buttons: Mmu.no_buttons({}), now: 0.U64 }
+    no_input = |_| { buttons: Bus.no_buttons({}), now: 0.U64 }
 
     # Battery-backed cartridge state as `.sav` bytes: cart RAM sized to
     # the header's declaration, not the internal allocation — the format
@@ -78,28 +79,52 @@ GameBoy := {
     # clock footer. Empty for batteryless carts.
     battery : GameBoy -> List(U8)
     battery = |gb|
-        if Header.has_battery(gb.mmu.rom) {
-            gb.mmu.cart_ram
-                .sublist({ start: 0, len: Header.ram_bytes(gb.mmu.rom) })
-                .concat(gb.mmu.battery_footer())
+        if Header.has_battery(gb.bus.cart.rom) {
+            gb.bus.cart.ram
+                .sublist({ start: 0, len: Header.ram_bytes(gb.bus.cart.rom) })
+                .concat(gb.bus.cart.battery_footer(gb.bus.now))
         } else {
             []
         }
 
     # Restore bytes saved by `battery` (or any emulator's `.sav`): bare
     # RAM, RAM + 44-byte RTC footer, and RAM + 48-byte footer all load.
+    # How supplied .sav bytes fit this cartridge. `with_battery` stays
+    # forgiving (pad/truncate, below), but silence was the flaw: a wrong or
+    # corrupt sav would boot a garbage save with no trace. Frontends SHOULD
+    # surface anything except Exact/Empty/NoBattery. Accepted-as-Exact:
+    # the declared RAM size bare, or with a 44-48 byte RTC footer (the
+    # legacy 44-byte form loads too).
+    battery_fit : GameBoy, List(U8) -> [NoBattery, Empty, Exact, Short(U64), Long(U64)]
+    battery_fit = |gb, bytes|
+        if Header.has_battery(gb.bus.cart.rom) == Bool.False {
+            NoBattery
+        } else if bytes.len() == 0 {
+            Empty
+        } else {
+            declared = Header.ram_bytes(gb.bus.cart.rom)
+            len = bytes.len()
+            if len == declared or (len >= declared.plus(44) and len <= declared.plus(48)) {
+                Exact
+            } else if len < declared {
+                Short(declared.minus(len))
+            } else {
+                Long(len.minus(declared))
+            }
+        }
+
     # Short payloads are zero-padded, long ones truncated — loading never
     # fails on size grounds. No-op for batteryless carts.
     with_battery : GameBoy, List(U8) -> GameBoy
     with_battery = |gb, bytes|
-        if Header.has_battery(gb.mmu.rom) {
-            declared = Header.ram_bytes(gb.mmu.rom)
+        if Header.has_battery(gb.bus.cart.rom) {
+            declared = Header.ram_bytes(gb.bus.cart.rom)
             kept = bytes.sublist({ start: 0, len: declared })
-            ram = kept.concat(List.repeat(0, gb.mmu.cart_ram.len().minus(kept.len())))
+            ram = kept.concat(List.repeat(0, gb.bus.cart.ram.len().minus(kept.len())))
             footer = bytes.sublist({ start: declared, len: 48 })
-            mmu1 = gb.mmu.set_cart_ram(ram)
-            mmu2 = if footer.len() >= 44 { mmu1.load_battery_footer(footer) } else { mmu1 }
-            { ..gb, mmu: mmu2 }
+            cart1 = gb.bus.cart.set_ram(ram)
+            cart2 = if footer.len() >= 44 { cart1.load_battery_footer(footer) } else { cart1 }
+            { ..gb, bus: gb.bus.set_cart(cart2) }
         } else {
             gb
         }
@@ -108,13 +133,13 @@ GameBoy := {
     # after being written). Frontends diff it across frames and flush
     # `battery` bytes to storage when it moves.
     save_events : GameBoy -> U64
-    save_events = |gb| gb.mmu.save_events
+    save_events = |gb| gb.bus.cart.save_events
 
     # Drain the APU's generated 48 kHz interleaved stereo samples
     take_samples : GameBoy -> { gb : GameBoy, samples : List(F32) }
     take_samples = |gb| {
-        t = gb.mmu.take_samples()
-        { gb: { ..gb, mmu: t.mmu }, samples: t.samples }
+        t = gb.bus.take_samples()
+        { gb: { ..gb, bus: t.bus }, samples: t.samples }
     }
 
     set_breakpoint : GameBoy, U16 -> GameBoy
@@ -136,7 +161,7 @@ GameBoy := {
     # first step so a machine stopped at the breakpoint resumes past it.
     run_until : GameBoy, _ -> (GameBoy, [FrameReady, BreakpointHit])
     run_until = |gb0, input| {
-        var gb = { ..gb0, mmu: gb0.mmu.set_input(input) }
+        var gb = { ..gb0, bus: gb0.bus.set_input(input) }
         var budget = 40000.U64
         var stopped = Bool.False
         var hit = Bool.False
@@ -146,9 +171,9 @@ GameBoy := {
                 stopped = Bool.True
                 hit = Bool.True
             } else {
-                was_ly = gb.mmu.read(0xFF44)
+                was_ly = gb.bus.read(0xFF44)
                 gb = match gb.step() { (g, _) => g }
-                if was_ly != 144 and gb.mmu.read(0xFF44) == 144 {
+                if was_ly != 144 and gb.bus.read(0xFF44) == 144 {
                     stopped = Bool.True
                 } else {
                     {}
@@ -183,7 +208,7 @@ GameBoy := {
                 .write8(Status, s.f)
                 .write8(H, s.h)
                 .write8(L, s.l),
-            mmu: Mmu.flat(s.mem),
+            bus: Bus.flat(s.mem),
             ppu: Ppu.init({}),
             apu: Apu.init({}),
             ime: s.ime,
@@ -208,7 +233,7 @@ GameBoy := {
         h: gb.reg.read8(H),
         l: gb.reg.read8(L),
         ime: gb.ime,
-        mem: gb.mmu.mem,
+        mem: gb.bus.mem,
     }
 
     # Execute exactly one instruction: no interrupt poll or dispatch, no
@@ -220,14 +245,14 @@ GameBoy := {
     # unless the machine was built by from_raw)
     access_trace : GameBoy -> List({ addr : U16, val : U8, dir : [Read, Write] })
     access_trace = |gb|
-        match gb.mmu.trace {
+        match gb.bus.trace {
             Trace(list) => list
             NoTrace => []
         }
 
     step : GameBoy -> (GameBoy, U64)
     step = |gb| {
-        pending = gb.mmu.read(0xFFFF).bitwise_and(gb.mmu.read(0xFF0F)).bitwise_and(0x1F)
+        pending = gb.bus.read(0xFFFF).bitwise_and(gb.bus.read(0xFF0F)).bitwise_and(0x1F)
         if gb.ime and pending != 0x00 {
             dispatch(gb, pending)
         } else if gb.halted {
@@ -247,10 +272,10 @@ GameBoy := {
     # the PPU and APU run in real time, so double speed feeds them half.
     finish : GameBoy, U64 -> (GameBoy, U64)
     finish = |gb, cycles| {
-        video_cycles = if gb.mmu.double_speed { cycles // 2 } else { cycles }
-        r = gb.ppu.tick(gb.mmu.tick(cycles), video_cycles)
-        a = gb.apu.tick(r.mmu, video_cycles)
-        ({ ..gb, mmu: a.mmu, ppu: r.ppu, apu: a.apu }, cycles)
+        video_cycles = if gb.bus.double_speed { cycles // 2 } else { cycles }
+        r = gb.ppu.tick(gb.bus.tick(cycles), video_cycles)
+        a = gb.apu.tick(r.bus, video_cycles)
+        ({ ..gb, bus: a.bus, ppu: r.ppu, apu: a.apu }, cycles)
     }
 
     dispatch : GameBoy, U8 -> (GameBoy, U64)
@@ -268,9 +293,9 @@ GameBoy := {
                 4
             }
         gb1 = push16(gb, gb.reg.read16(ProgramCounter))
-        mmu2 = gb1.mmu.poke(0xFF0F, gb1.mmu.read(0xFF0F).bitwise_and(U8.shl_wrap(1, bit).bitwise_not()))
+        bus2 = gb1.bus.poke(0xFF0F, gb1.bus.read(0xFF0F).bitwise_and(U8.shl_wrap(1, bit).bitwise_not()))
         reg2 = gb1.reg.write16(ProgramCounter, bit.to_u16().shl_wrap(3).plus(0x0040))
-        finish({ ..gb1, reg: reg2, mmu: mmu2, ime: Bool.False, halted: Bool.False }, 20)
+        finish({ ..gb1, reg: reg2, bus: bus2, ime: Bool.False, halted: Bool.False }, 20)
     }
 
     run : GameBoy -> (GameBoy, U64)
@@ -307,18 +332,18 @@ GameBoy := {
         if e8 >= 0x80 { e8.to_u16().bitwise_or(0xFF00) } else { e8.to_u16() }
 
     mem_write : GameBoy, U16, U8 -> GameBoy
-    mem_write = |gb, addr, value| { ..gb, mmu: gb.mmu.write(addr, value).trace_access(addr, value, Write) }
+    mem_write = |gb, addr, value| { ..gb, bus: gb.bus.write(addr, value).trace_access(addr, value, Write) }
 
-    # CPU-path read, threading the Mmu so the access trace stays in
+    # CPU-path read, threading the Bus so the access trace stays in
     # program order. With tracing off (every non-harness machine) this is
     # the plain pure read.
     mem_read : GameBoy, U16 -> { gb : GameBoy, value : U8 }
     mem_read = |gb, addr|
-        match gb.mmu.trace {
-            NoTrace => { gb: gb, value: gb.mmu.read(addr) }
+        match gb.bus.trace {
+            NoTrace => { gb: gb, value: gb.bus.read(addr) }
             Trace(_) => {
-                r = gb.mmu.read_traced(addr)
-                { gb: { ..gb, mmu: r.mmu }, value: r.value }
+                r = gb.bus.read_traced(addr)
+                { gb: { ..gb, bus: r.bus }, value: r.value }
             }
         }
 
@@ -483,7 +508,7 @@ GameBoy := {
     execute = |gb, pc, instr|
         match instr {
             Nop => { gb: gb, pc: pc, cycles: 4.U64 }
-            Stop => { gb: { ..gb, mmu: gb.mmu.stop_switch() }, pc: pc.plus_wrap(1), cycles: 4.U64 } # speed switch when armed; else a NOP that skips its padding
+            Stop => { gb: { ..gb, bus: gb.bus.stop_switch() }, pc: pc.plus_wrap(1), cycles: 4.U64 } # speed switch when armed; else a NOP that skips its padding
             Halt => { gb: { ..gb, halted: Bool.True }, pc: pc, cycles: 4.U64 }
             Illegal => { gb: gb, pc: pc, cycles: 4.U64 } # real hardware locks up
             Unknown => { gb: gb, pc: pc, cycles: 4.U64 }
@@ -699,22 +724,22 @@ expect {
 # Interrupt dispatch: PC pushed, vector 0x40 taken, IME and IF bit cleared, 20 cycles
 expect {
     gb0 = GameBoy.init(rom_with([0x00]))
-    gb1 = { ..gb0, ime: Bool.True, mmu: gb0.mmu.write(0xFFFF, 0x01).poke(0xFF0F, 0x01) }
+    gb1 = { ..gb0, ime: Bool.True, bus: gb0.bus.write(0xFFFF, 0x01).poke(0xFF0F, 0x01) }
     match gb1.step() {
         (g, c) =>
             c == 20
             and g.reg.read16(ProgramCounter) == 0x0040
             and g.ime == Bool.False
-            and g.mmu.read(0xFF0F).bitwise_and(0x01) == 0x00
-            and g.mmu.read(0xFFFD) == 0x01
-            and g.mmu.read(0xFFFC) == 0x00
+            and g.bus.read(0xFF0F).bitwise_and(0x01) == 0x00
+            and g.bus.read(0xFFFD) == 0x01
+            and g.bus.read(0xFFFC) == 0x00
     }
 }
 
 # EI delay: the instruction after EI runs before dispatch
 expect {
     gb0 = GameBoy.init(rom_with([0xFB, 0x00])) # EI; NOP
-    gb1 = { ..gb0, mmu: gb0.mmu.write(0xFFFF, 0x01).poke(0xFF0F, 0x01) }
+    gb1 = { ..gb0, bus: gb0.bus.write(0xFFFF, 0x01).poke(0xFF0F, 0x01) }
     g2 = after_step(after_step(gb1)) # EI, then NOP still executes
     g3 = after_step(g2) # now the interrupt dispatches
     g2.reg.read16(ProgramCounter) == 0x0102 and g3.reg.read16(ProgramCounter) == 0x0040
@@ -724,10 +749,10 @@ expect {
 expect {
     gb0 = GameBoy.init(rom_with([0x76, 0x3E, 0x07])) # HALT; LD A, 0x07
     # post-boot IF is 0xE1, so clear it or the HALT wakes immediately
-    gb1 = { ..gb0, mmu: gb0.mmu.write(0xFFFF, 0x01).poke(0xFF0F, 0x00) }
+    gb1 = { ..gb0, bus: gb0.bus.write(0xFFFF, 0x01).poke(0xFF0F, 0x00) }
     g1 = after_step(gb1) # halts
     g2 = after_step(g1) # nothing pending: stays halted
-    g3 = after_step({ ..g2, mmu: g2.mmu.poke(0xFF0F, 0x01) }) # wakes, runs the LD
+    g3 = after_step({ ..g2, bus: g2.bus.poke(0xFF0F, 0x01) }) # wakes, runs the LD
     g1.halted == Bool.True
     and g2.halted == Bool.True
     and g3.reg.read8(Accumulator) == 0x07
@@ -754,7 +779,7 @@ expect {
 expect {
     gb = GameBoy.init(rom_with([0x18, 0xFE])).run_frame(GameBoy.no_input({})) # JR -2: tight loop
     fb = gb.framebuffer()
-    gb.mmu.read(0xFF44) == 144
+    gb.bus.read(0xFF44) == 144
     and fb.len() == 23040
     and fb.fold(Bool.True, |ok, px| ok and (px == 0x7FFF or px == 0x56B5 or px == 0x294A or px == 0x0000))
 }
@@ -762,7 +787,7 @@ expect {
 # run_until without a breakpoint stops for the frame, like run_frame
 expect {
     match GameBoy.init(rom_with([0x18, 0xFE])).run_until(GameBoy.no_input({})) {
-        (gb, FrameReady) => gb.mmu.read(0xFF44) == 144
+        (gb, FrameReady) => gb.bus.read(0xFF44) == 144
         (_, BreakpointHit) => Bool.False
     }
 }
@@ -786,7 +811,7 @@ expect {
             match gb1.run_until(GameBoy.no_input({})) {
                 (gb2, BreakpointHit) =>
                     match gb2.clear_breakpoint().run_until(GameBoy.no_input({})) {
-                        (gb3, FrameReady) => gb3.mmu.read(0xFF44) == 144
+                        (gb3, FrameReady) => gb3.bus.read(0xFF44) == 144
                         (_, BreakpointHit) => Bool.False
                     }
 
@@ -825,10 +850,10 @@ battery_rom = |ram_size_byte| {
 expect {
     rom = battery_rom(0x02) # 8 KiB declared
     gb0 = GameBoy.init(rom)
-    gb1 = { ..gb0, mmu: gb0.mmu.write(0x0000, 0x0A).write(0xA000, 0x5A) }
+    gb1 = { ..gb0, bus: gb0.bus.write(0x0000, 0x0A).write(0xA000, 0x5A) }
     sav = gb1.battery()
     restored = GameBoy.init(rom).with_battery(sav)
-    enabled = { ..restored, mmu: restored.mmu.write(0x0000, 0x0A) }
+    enabled = { ..restored, bus: restored.bus.write(0x0000, 0x0A) }
     sav.len() == 8192 and (sav.get(0) ?? 0x00) == 0x5A and enabled.peek(0xA000) == 0x5A
 }
 
@@ -838,7 +863,24 @@ expect {
     rom = plain.set(0x0147, 0x01) ?? plain # MBC1, no RAM/battery
     gb = GameBoy.init(rom).with_battery(List.repeat(0x77, 8192))
     # injection was a no-op: the RAM buffer still holds its init value
-    gb.battery().len() == 0 and { ..gb, mmu: gb.mmu.write(0x0000, 0x0A) }.peek(0xA000) == 0x00
+    gb.battery().len() == 0 and { ..gb, bus: gb.bus.write(0x0000, 0x0A) }.peek(0xA000) == 0x00
+}
+
+# battery_fit reports how sav bytes match the cartridge's declared RAM:
+# exact and footer-bearing sizes pass, everything else is Short/Long
+expect {
+    plain = List.repeat(0x00.U8, 0x8000)
+    rom = plain.set(0x0147, 0x03) ?? plain # MBC1+RAM+BATTERY
+    with_ram = rom.set(0x0149, 0x02) ?? rom # 8 KiB RAM
+    gb = GameBoy.init(with_ram)
+    batteryless = GameBoy.init(plain.set(0x0147, 0x01) ?? plain)
+    gb.battery_fit(List.repeat(0, 8192)) == Exact
+    and gb.battery_fit(List.repeat(0, 8192 + 48)) == Exact
+    and gb.battery_fit(List.repeat(0, 8192 + 44)) == Exact
+    and gb.battery_fit([]) == Empty
+    and gb.battery_fit(List.repeat(0, 100)) == Short(8092)
+    and gb.battery_fit(List.repeat(0, 9000)) == Long(808)
+    and batteryless.battery_fit(List.repeat(0, 8192)) == NoBattery
 }
 
 # Size tolerance: short payloads zero-pad, long ones truncate
@@ -861,7 +903,7 @@ expect {
     typed = base.set(0x0147, 0x10) ?? base
     rom = typed.set(0x0149, 0x03) ?? typed # MBC3+Timer+Ram+Battery, 32 KiB
     gb0 = GameBoy.init(rom)
-    gb1 = { ..gb0, mmu: gb0.mmu.set_input(GameBoy.no_input({})).write(0x0000, 0x0A).write(0xA000, 0x42) }
+    gb1 = { ..gb0, bus: gb0.bus.set_input(GameBoy.no_input({})).write(0x0000, 0x0A).write(0xA000, 0x42) }
     sav = gb1.battery()
     again = GameBoy.init(rom).with_battery(sav).battery()
     sav.len() == 0x8000.U64.plus(48) and sav == again

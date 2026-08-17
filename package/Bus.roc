@@ -1,0 +1,961 @@
+# Flat 64 KiB memory bus. Only `read`/`write` touch `mem` so the list stays
+# uniquely owned and Roc can mutate it in place (never alias it elsewhere).
+# The cartridge (ROM banking, external RAM, RTC, battery) hangs off the
+# bus as `cart`; the 0x0000-0x7FFF and 0xA000-0xBFFF regions delegate.
+# https://gbdev.io/pandocs/Memory_Map.html
+
+import /Cartridge
+
+Bus := {
+    mem : List(U8),
+    cart : Cartridge,
+    serial_out : List(U8),
+    div_counter : U64,
+    tima_counter : U64,
+    buttons : { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool },
+    apu_events : List(U8), # register-write events (address low byte), power off/on (0xF0/0xF1), drained by the APU
+    samples : List(F32), # APU output ring (preallocated: append-in-spread clones, set does not)
+    sample_count : U64, # write index into the ring
+    model : [Dmg, Cgb], # console model, from the header CGB flag (0x0143).
+    # Stored here pragmatically: the bus is the substrate every component
+    # already holds (register gating consults it constantly; the PPU reads
+    # through the Bus). Extending the family (Mgb, Sgb, ...) extends the tag.
+    vbk : U8, # CGB VRAM bank select (0xFF4F, bit 0)
+    svbk : U8, # CGB WRAM bank select (0xFF70, bits 0-2; 0 selects 1)
+    vram1 : List(U8), # CGB VRAM bank 1 (bank 0 stays in mem)
+    wram_hi : List(U8), # CGB WRAM banks 2-7 (bank 1 stays in mem)
+    bg_pal : List(U8), # CGB background palette RAM, 64 bytes
+    ob_pal : List(U8), # CGB object palette RAM, 64 bytes
+    bcps : U8, # BG palette specifier: bit 7 auto-increment, bits 0-5 index
+    ocps : U8, # OBJ palette specifier
+    key1_prepare : Bool, # KEY1 speed-switch armed
+    double_speed : Bool, # CGB double-speed mode (CPU+timers 2x vs PPU/APU)
+    hdma_src : U16, # VRAM DMA source (low 4 bits masked off)
+    hdma_dst : U16, # VRAM DMA destination within 0x8000-0x9FF0
+    hdma_blocks : U8, # remaining 16-byte blocks for an active HBlank DMA
+    hdma_active : Bool,
+    opri : U8, # object priority mode (used by the CGB render path later)
+    now : U64, # wall clock (UNIX seconds), data not effect; frontends refresh it per frame
+    layout : [Mapped, Flat], # Flat: raw 64 KiB, no region semantics (single-step harness only)
+    trace : [NoTrace, Trace(List({ addr : U16, val : U8, dir : [Read, Write] }))], # per-access record, harness only
+}.{
+    no_buttons : {} -> { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool }
+    no_buttons = |_| {
+        up: Bool.False,
+        down: Bool.False,
+        left: Bool.False,
+        right: Bool.False,
+        a: Bool.False,
+        b: Bool.False,
+        start: Bool.False,
+        select: Bool.False,
+    }
+
+    init : List(U8) -> Bus
+    init = |rom| {
+        cgb_flag = rom.get(0x0143) ?? 0x00
+        base : Bus
+        base = {
+            mem: List.repeat(0, 0x10000),
+            cart: Cartridge.init(rom),
+            model: if cgb_flag == 0x80 or cgb_flag == 0xC0 { Cgb } else { Dmg },
+            vbk: 0,
+            svbk: 0,
+            vram1: List.repeat(0, 0x2000),
+            wram_hi: List.repeat(0, 0x6000),
+            bg_pal: List.repeat(0xFF, 64),
+            ob_pal: List.repeat(0xFF, 64),
+            bcps: 0,
+            ocps: 0,
+            key1_prepare: Bool.False,
+            double_speed: Bool.False,
+            hdma_src: 0,
+            hdma_dst: 0x8000,
+            hdma_blocks: 0,
+            hdma_active: Bool.False,
+            opri: 0,
+            serial_out: [],
+            div_counter: 0,
+            tima_counter: 0,
+            buttons: no_buttons({}),
+            apu_events: [],
+            samples: List.repeat(0.0, 16384), # ~5 frames of stereo headroom
+            sample_count: 0,
+            now: 0,
+            layout: Mapped,
+            trace: NoTrace,
+        }
+        # DMG post-boot IO state. LY starts at 0; the PPU advances it for real.
+        [
+            (0xFF00, 0xCF), # P1/JOYP: no buttons pressed
+            (0xFF02, 0x7E), # SC
+            (0xFF04, 0xAB), # DIV
+            (0xFF07, 0xF8), # TAC
+            (0xFF0F, 0xE1), # IF
+            (0xFF10, 0x80), # NR10
+            (0xFF11, 0xBF), # NR11
+            (0xFF12, 0xF3), # NR12
+            (0xFF14, 0xBF), # NR14
+            (0xFF16, 0x3F), # NR21
+            (0xFF19, 0xBF), # NR24
+            (0xFF1A, 0x7F), # NR30
+            (0xFF1B, 0xFF), # NR31
+            (0xFF1C, 0x9F), # NR32
+            (0xFF1E, 0xBF), # NR34
+            (0xFF20, 0xFF), # NR41
+            (0xFF23, 0xBF), # NR44
+            (0xFF24, 0x77), # NR50
+            (0xFF25, 0xF3), # NR51
+            (0xFF26, 0x80), # NR52: power on, no channels active yet
+            (0xFF40, 0x91), # LCDC
+            (0xFF41, 0x86), # STAT: line 0, mode 2, LY=LYC
+            (0xFF47, 0xFC), # BGP
+        ]
+            .fold(base, |bus, (addr, value)| bus.poke(addr, value))
+    }
+
+    # Flat 64 KiB for the single-step harness: no banking, no region
+    # semantics, every address a plain byte. The vectors assume exactly
+    # this, and the access trace is on from birth.
+    flat : List(U8) -> Bus
+    flat = |image| {
+        sized = image.sublist({ start: 0, len: 0x10000 })
+        mem = sized.concat(List.repeat(0, 0x10000.U64.minus(sized.len())))
+        { ..init([]), mem: mem, layout: Flat, trace: Trace([]) }
+    }
+
+    # Append one access to the trace; free when tracing is off
+    trace_access : Bus, U16, U8, [Read, Write] -> Bus
+    trace_access = |bus, addr, val, dir|
+        match bus.trace {
+            NoTrace => bus
+            Trace(list) => { ..bus, trace: Trace(list.append({ addr: addr, val: val, dir: dir })) }
+        }
+
+    # Read that records itself in the trace — the CPU paths in GameBoy
+    # thread the returned Bus so access order is honest
+    read_traced : Bus, U16 -> { bus : Bus, value : U8 }
+    read_traced = |bus, addr| {
+        value = bus.read(addr)
+        { bus: bus.trace_access(addr, value, Read), value: value }
+    }
+
+    read : Bus, U16 -> U8
+    read = |bus, addr|
+        if bus.layout == Flat {
+            bus.mem.get(addr.to_u64()) ?? 0xFF
+        } else if addr < 0x8000 {
+            bus.cart.read_rom(addr)
+        } else if addr >= 0xA000 and addr < 0xC000 {
+            bus.cart.read_ram(addr)
+        } else if addr >= 0xFF10 and addr <= 0xFF2F {
+            if addr == 0xFF26 {
+                # 0x70 | power bit | live channel-status bits (poked by the APU)
+                U8.bitwise_or(0x70, (bus.mem.get(0xFF26) ?? 0x00).bitwise_and(0x8F))
+            } else {
+                (bus.mem.get(addr.to_u64()) ?? 0x00).bitwise_or(apu_read_mask(addr))
+            }
+        } else if addr == 0xFF00 {
+            read_p1(bus)
+        } else if addr >= 0x8000 and addr < 0xA000 and is_cgb(bus) and bus.vbk == 1 {
+            bus.vram1.get(addr.to_u64().minus(0x8000)) ?? 0xFF
+        } else if addr >= 0xD000 and addr < 0xE000 and is_cgb(bus) and svbk_bank(bus) >= 2 {
+            bus.wram_hi.get(svbk_bank(bus).minus(2).shl_wrap(12).plus(addr.to_u64().minus(0xD000))) ?? 0xFF
+        } else if is_cgb_reg(addr) {
+            if is_cgb(bus) { read_cgb_reg(bus, addr) } else { 0xFF }
+        } else {
+            bus.mem.get(addr.to_u64()) ?? 0xFF
+        }
+
+    # Effective CGB WRAM bank for 0xD000-0xDFFF (0 selects 1)
+    svbk_bank : Bus -> U64
+    svbk_bank = |bus| {
+        b = bus.svbk.bitwise_and(0x07).to_u64()
+        if b == 0 { 1 } else { b }
+    }
+
+    # The CGB-only IO register file: KEY1, VBK, HDMA1-5, palettes, OPRI, SVBK.
+    # Membership is checked once in the read/write dispatch so the DMG
+    # behavior (reads 0xFF, writes ignored) lives in exactly one place.
+    is_cgb_reg : U16 -> Bool
+    is_cgb_reg = |addr|
+        addr == 0xFF4D or addr == 0xFF4F or addr == 0xFF70 or (addr >= 0xFF51 and addr <= 0xFF55) or (addr >= 0xFF68 and addr <= 0xFF6C)
+
+    read_cgb_reg : Bus, U16 -> U8
+    read_cgb_reg = |bus, addr|
+        match addr {
+            0xFF4D => {
+                speed = if bus.double_speed { 0x80.U8 } else { 0x00 }
+                prepare = if bus.key1_prepare { 0x01.U8 } else { 0x00 }
+                speed.bitwise_or(0x7E).bitwise_or(prepare)
+            }
+            0xFF4F => U8.bitwise_or(0xFE, bus.vbk)
+            0xFF55 => if bus.hdma_active { bus.hdma_blocks.minus_wrap(1).bitwise_and(0x7F) } else { 0xFF }
+            0xFF68 => bus.bcps.bitwise_or(0x40)
+            0xFF69 => bus.bg_pal.get(bus.bcps.bitwise_and(0x3F).to_u64()) ?? 0xFF
+            0xFF6A => bus.ocps.bitwise_or(0x40)
+            0xFF6B => bus.ob_pal.get(bus.ocps.bitwise_and(0x3F).to_u64()) ?? 0xFF
+            0xFF6C => U8.bitwise_or(0xFE, bus.opri)
+            0xFF70 => U8.bitwise_or(0xF8, bus.svbk)
+            _ => 0xFF # HDMA1-4 are write-only
+        }
+
+    write_cgb_reg : Bus, U16, U8 -> Bus
+    write_cgb_reg = |bus, addr, value|
+        match addr {
+            0xFF4D => { ..bus, key1_prepare: value.bitwise_and(0x01) == 0x01 }
+            0xFF4F => { ..bus, vbk: value.bitwise_and(0x01) }
+            0xFF51 => { ..bus, hdma_src: value.to_u16().shl_wrap(8).bitwise_or(bus.hdma_src.bitwise_and(0x00F0)) }
+            0xFF52 => { ..bus, hdma_src: bus.hdma_src.bitwise_and(0xFF00).bitwise_or(value.bitwise_and(0xF0).to_u16()) }
+            0xFF53 => { ..bus, hdma_dst: U16.plus(0x8000, value.bitwise_and(0x1F).to_u16().shl_wrap(8).bitwise_or(bus.hdma_dst.bitwise_and(0x00F0))) }
+            0xFF54 => { ..bus, hdma_dst: U16.plus(0x8000, bus.hdma_dst.bitwise_and(0x1F00).bitwise_or(value.bitwise_and(0xF0).to_u16())) }
+            0xFF55 => write_hdma5(bus, value)
+            0xFF68 => { ..bus, bcps: value.bitwise_and(0xBF) }
+            0xFF69 => write_bcpd(bus, value)
+            0xFF6A => { ..bus, ocps: value.bitwise_and(0xBF) }
+            0xFF6B => write_ocpd(bus, value)
+            0xFF6C => { ..bus, opri: value.bitwise_and(0x01) }
+            0xFF70 => { ..bus, svbk: value.bitwise_and(0x07) }
+            _ => bus
+        }
+
+    # Bank-explicit VRAM read, independent of the game's VBK selection —
+    # the CGB PPU fetches tiles from bank 0 and attributes from bank 1.
+    read_vram : Bus, U8, U16 -> U8
+    read_vram = |bus, bank, addr|
+        if bank == 1 and is_cgb(bus) {
+            bus.vram1.get(addr.to_u64().minus(0x8000)) ?? 0xFF
+        } else {
+            bus.mem.get(addr.to_u64()) ?? 0xFF
+        }
+
+    # "Does this machine have the color hardware?" — the question every
+    # CGB gate actually asks. Kept as a predicate (rather than inlining
+    # `bus.model == Cgb` everywhere) so growing the model family changes
+    # one line: Mgb/Sgb would join the DMG side, an AGB the color side.
+    # (Cross-module field access works fine; this is not an access shim.)
+    is_cgb : Bus -> Bool
+    is_cgb = |bus| bus.model == Cgb
+
+    # Palette RAM bytes for the PPU's color lookups
+    bg_pal_byte : Bus, U64 -> U8
+    bg_pal_byte = |bus, i| bus.bg_pal.get(i) ?? 0xFF
+
+    ob_pal_byte : Bus, U64 -> U8
+    ob_pal_byte = |bus, i| bus.ob_pal.get(i) ?? 0xFF
+
+    # OPRI: 1 selects DMG-style X-coordinate sprite priority
+    opri_x_order : Bus -> Bool
+    opri_x_order = |bus| bus.opri == 1
+
+    # STOP with the prepare bit armed toggles double speed (CGB only)
+    stop_switch : Bus -> Bus
+    stop_switch = |bus|
+        if is_cgb(bus) and bus.key1_prepare {
+            { ..bus, double_speed: bus.double_speed == Bool.False, key1_prepare: Bool.False }
+        } else {
+            bus
+        }
+
+    # HDMA5: bit 7 clear = immediate GDMA of (len+1)x16 bytes (or cancel an
+    # active HBlank DMA); bit 7 set = arm HBlank DMA of (len+1) blocks
+    write_hdma5 : Bus, U8 -> Bus
+    write_hdma5 = |bus, value| {
+        blocks = value.bitwise_and(0x7F).plus(1)
+        if value.bitwise_and(0x80) != 0x00 {
+            { ..bus, hdma_blocks: blocks, hdma_active: Bool.True }
+        } else if bus.hdma_active {
+            { ..bus, hdma_active: Bool.False }
+        } else {
+            gdma(bus, blocks)
+        }
+    }
+
+    gdma : Bus, U8 -> Bus
+    gdma = |bus0, blocks| {
+        var m = bus0
+        var b = 0.U8
+        while b < blocks {
+            m = copy_block(m)
+            b = b.plus(1)
+        }
+        m
+    }
+
+    # One 16-byte VRAM DMA block through read/write, so source banking and
+    # the VBK destination bank apply naturally; pointers advance
+    copy_block : Bus -> Bus
+    copy_block = |bus0| {
+        var m = bus0
+        var i = 0.U16
+        while i < 16 {
+            m = m.write(m.hdma_dst.plus(i), m.read(m.hdma_src.plus(i)))
+            i = i.plus(1)
+        }
+        { ..m, hdma_src: m.hdma_src.plus_wrap(16), hdma_dst: m.hdma_dst.plus_wrap(16) }
+    }
+
+    # Called by the PPU at each visible line's HBlank entry
+    hdma_hblank : Bus -> Bus
+    hdma_hblank = |bus|
+        if bus.hdma_active {
+            copied = copy_block(bus)
+            remaining = copied.hdma_blocks.minus_wrap(1)
+            { ..copied, hdma_blocks: remaining, hdma_active: remaining != 0 }
+        } else {
+            bus
+        }
+
+    # BCPD/OCPD data-port writes: store at the specifier's index, then
+    # advance it when the auto-increment bit is set. (Palette list update
+    # bound before the record spread on purpose — see the refcount trap in
+    # the toolchain notes.)
+    write_bcpd : Bus, U8 -> Bus
+    write_bcpd = |bus, value| {
+        idx = bus.bcps.bitwise_and(0x3F)
+        pal = bus.bg_pal.set(idx.to_u64(), value) ?? bus.bg_pal
+        next = if bus.bcps.bitwise_and(0x80) != 0x00 { idx.plus(1).bitwise_and(0x3F).bitwise_or(0x80) } else { bus.bcps }
+        { ..bus, bg_pal: pal, bcps: next }
+    }
+
+    write_ocpd : Bus, U8 -> Bus
+    write_ocpd = |bus, value| {
+        idx = bus.ocps.bitwise_and(0x3F)
+        pal = bus.ob_pal.set(idx.to_u64(), value) ?? bus.ob_pal
+        next = if bus.ocps.bitwise_and(0x80) != 0x00 { idx.plus(1).bitwise_and(0x3F).bitwise_or(0x80) } else { bus.ocps }
+        { ..bus, ob_pal: pal, ocps: next }
+    }
+
+    set_buttons = |bus, buttons| { ..bus, buttons: buttons }
+
+    set_input = |bus, input| { ..bus, buttons: input.buttons, now: input.now }
+
+    # Swap in an updated cartridge (battery loads etc.) — consumers
+    # compose Cartridge functions and hand the result back to the bus
+    set_cart : Bus, Cartridge -> Bus
+    set_cart = |bus, cart| { ..bus, cart: cart }
+
+    # P1/JOYP: stored select bits plus the selected group's buttons,
+    # active-low (0 = pressed). Both groups selected AND together.
+    read_p1 : Bus -> U8
+    read_p1 = |bus| {
+        sel = (bus.mem.get(0xFF00) ?? 0xFF).bitwise_and(0x30)
+        b = bus.buttons
+        dpad = if sel.bitwise_and(0x10) == 0x00 { button_nibble(b.right, b.left, b.up, b.down) } else { 0x0F }
+        actions = if sel.bitwise_and(0x20) == 0x00 { button_nibble(b.a, b.b, b.select, b.start) } else { 0x0F }
+        U8.bitwise_or(0xC0, sel).bitwise_or(dpad.bitwise_and(actions))
+    }
+
+    # bits 0-3, low when pressed
+    button_nibble : Bool, Bool, Bool, Bool -> U8
+    button_nibble = |b0, b1, b2, b3|
+        button_bit(b0, 0x01)
+            .bitwise_or(button_bit(b1, 0x02))
+            .bitwise_or(button_bit(b2, 0x04))
+            .bitwise_or(button_bit(b3, 0x08))
+
+    button_bit : Bool, U8 -> U8
+    button_bit = |pressed, mask| if pressed { 0x00 } else { mask }
+
+    # Unmasked register byte for internal components (the APU must see the
+    # real written values, not the CPU-facing read-back masks)
+    read_raw : Bus, U16 -> U8
+    read_raw = |bus, addr| bus.mem.get(addr.to_u64()) ?? 0xFF
+
+    serial : Bus -> List(U8)
+    serial = |bus| bus.serial_out
+
+    # Raw store bypassing region semantics (init defaults, timer internals)
+    poke : Bus, U16, U8 -> Bus
+    poke = |bus, addr, value|
+        { ..bus, mem: bus.mem.set(addr.to_u64(), value) ?? bus.mem }
+
+    # Write-only and unused APU register bits read back as 1
+    apu_read_mask : U16 -> U8
+    apu_read_mask = |addr|
+        match addr {
+            0xFF10 => 0x80
+            0xFF11 => 0x3F
+            0xFF12 => 0x00
+            0xFF13 => 0xFF
+            0xFF14 => 0xBF
+            0xFF16 => 0x3F
+            0xFF17 => 0x00
+            0xFF18 => 0xFF
+            0xFF19 => 0xBF
+            0xFF1A => 0x7F
+            0xFF1B => 0xFF
+            0xFF1C => 0x9F
+            0xFF1D => 0xFF
+            0xFF1E => 0xBF
+            0xFF20 => 0xFF
+            0xFF21 => 0x00
+            0xFF22 => 0x00
+            0xFF23 => 0xBF
+            0xFF24 => 0x00
+            0xFF25 => 0x00
+            _ => 0xFF # 0xFF15, 0xFF1F, and 0xFF27-0xFF2F are unmapped
+        }
+
+    apu_powered : Bus -> Bool
+    apu_powered = |bus| (bus.mem.get(0xFF26) ?? 0x00).bitwise_and(0x80) != 0x00
+
+    # Registers whose writes have side effects the APU must apply at write
+    # time: NR10 (sweep negate quirk), NRx1 (length reload), NRx2/NR30 (DAC
+    # gate), NRx4 (trigger and length-enable edge clocking)
+    apu_reg_event : U16 -> Bool
+    apu_reg_event = |addr|
+        match addr {
+            0xFF10 | 0xFF11 | 0xFF12 | 0xFF14 => Bool.True
+            0xFF16 | 0xFF17 | 0xFF19 => Bool.True
+            0xFF1A | 0xFF1B | 0xFF1E => Bool.True
+            0xFF20 | 0xFF21 | 0xFF23 => Bool.True
+            _ => Bool.False
+        }
+
+    push_sample_pair : Bus, F32, F32 -> Bus
+    push_sample_pair = |bus, left, right| {
+        c = bus.sample_count
+        if c.plus(2) > bus.samples.len() {
+            bus # ring full (no consumer draining): drop, keeping memory bounded
+        } else {
+            one = { ..bus, samples: bus.samples.set(c, left) ?? bus.samples }
+            { ..one, samples: one.samples.set(c.plus(1), right) ?? one.samples, sample_count: c.plus(2) }
+        }
+    }
+
+    # Copy-out drain: the ring buffer must never be aliased by the returned
+    # list, or the next set would clone the whole ring
+    take_samples : Bus -> { bus : Bus, samples : List(F32) }
+    take_samples = |bus| {
+        n = bus.sample_count
+        var out = List.repeat(0.0, 0)
+        var i = 0
+        while i < n {
+            out = out.append(bus.samples.get(i) ?? 0.0)
+            i = i.plus(1)
+        }
+        { bus: { ..bus, sample_count: 0 }, samples: out }
+    }
+
+    take_apu_events : Bus -> { bus : Bus, events : List(U8) }
+    take_apu_events = |bus| { bus: { ..bus, apu_events: [] }, events: bus.apu_events }
+
+    write : Bus, U16, U8 -> Bus
+    write = |bus, addr, value|
+        if bus.layout == Flat {
+            { ..bus, mem: bus.mem.set(addr.to_u64(), value) ?? bus.mem }
+        } else if addr < 0x8000 {
+            { ..bus, cart: bus.cart.write_control(addr, value, bus.now) }
+        } else if addr >= 0xA000 and addr < 0xC000 {
+            { ..bus, cart: bus.cart.write_ram(addr, value, bus.now) }
+        } else if addr >= 0xFF10 and addr <= 0xFF25 {
+            if apu_powered(bus) {
+                written = bus.poke(addr, value)
+                if apu_reg_event(addr) {
+                    { ..written, apu_events: written.apu_events.append(addr.to_u8_wrap()) }
+                } else {
+                    written
+                }
+            } else if is_cgb(bus) {
+                bus # CGB: power off gates the whole register file
+            } else if addr == 0xFF11 or addr == 0xFF16 or addr == 0xFF20 {
+                # DMG: length counters load even while powered off (duty bits stay 0)
+                m = bus.poke(addr, value.bitwise_and(0x3F))
+                { ..m, apu_events: m.apu_events.append(addr.to_u8_wrap()) }
+            } else if addr == 0xFF1B {
+                m = bus.poke(addr, value)
+                { ..m, apu_events: m.apu_events.append(addr.to_u8_wrap()) }
+            } else {
+                bus # power off gates the register file
+            }
+        } else if addr == 0xFF26 {
+            if value.bitwise_and(0x80) == 0x00 {
+                # power off: clear the register file and tell the APU
+                var m = bus.poke(0xFF26, 0x00)
+                var a = 0xFF10.U16
+                while a <= 0xFF25 {
+                    m = m.poke(a, 0x00)
+                    a = a.plus(1)
+                }
+                { ..m, apu_events: m.apu_events.append(0xF0) }
+            } else {
+                was_off = (bus.mem.get(0xFF26) ?? 0x00).bitwise_and(0x80) == 0x00
+                m = bus.poke(0xFF26, (bus.mem.get(0xFF26) ?? 0x00).bitwise_and(0x0F).bitwise_or(0x80))
+                if was_off { { ..m, apu_events: m.apu_events.append(0xF1) } } else { m }
+            }
+        } else if addr >= 0x8000 and addr < 0xA000 and is_cgb(bus) and bus.vbk == 1 {
+            { ..bus, vram1: bus.vram1.set(addr.to_u64().minus(0x8000), value) ?? bus.vram1 }
+        } else if addr >= 0xD000 and addr < 0xE000 and is_cgb(bus) and svbk_bank(bus) >= 2 {
+            { ..bus, wram_hi: bus.wram_hi.set(svbk_bank(bus).minus(2).shl_wrap(12).plus(addr.to_u64().minus(0xD000)), value) ?? bus.wram_hi }
+        } else if is_cgb_reg(addr) {
+            if is_cgb(bus) { write_cgb_reg(bus, addr, value) } else { bus }
+        } else if addr == 0xFF02 {
+            # Serial control: bit 7 starts a transfer; capture SB as the
+            # Blargg reporting channel and mark the transfer complete
+            if value.bitwise_and(0x80) != 0x00 {
+                sb = bus.read(0xFF01)
+                { ..bus, serial_out: bus.serial_out.append(sb) }.poke(addr, value.bitwise_and(0x7F))
+            } else {
+                bus.poke(addr, value)
+            }
+        } else if addr == 0xFF04 {
+            { ..bus, div_counter: 0 }.poke(addr, 0x00) # DIV: any write resets
+        } else if addr == 0xFF00 {
+            bus.poke(addr, value.bitwise_and(0x30).bitwise_or(0xC0)) # only the select bits stick
+        } else if addr == 0xFF46 {
+            # OAM DMA: instant 160-byte copy from value<<8 (games spin in HRAM
+            # during the real transfer, so zero-time is invisible to them)
+            src = value.to_u16().shl_wrap(8)
+            var m = bus.poke(addr, value)
+            var i = 0.U16
+            while i < 0xA0 {
+                m = m.poke(U16.plus(0xFE00, i), m.read(src.plus(i)))
+                i = i.plus(1)
+            }
+            m
+        } else if addr == 0xFF41 {
+            # STAT: bits 0-2 are hardware status, games only write the enables
+            bus.poke(addr, value.bitwise_and(0xF8).bitwise_or(bus.read(addr).bitwise_and(0x07)))
+        } else if addr == 0xFF44 {
+            bus # LY is read-only
+        } else {
+            bus.poke(addr, value)
+        }
+
+    request_interrupt : Bus, U8 -> Bus
+    request_interrupt = |bus, bit|
+        bus.poke(0xFF0F, bus.read(0xFF0F).bitwise_or(U8.shl_wrap(1, bit)))
+
+    # Advance DIV/TIMA by elapsed T-cycles; TIMA overflow reloads TMA and
+    # raises the timer interrupt (IF bit 2)
+    tick : Bus, U64 -> Bus
+    tick = |bus, cycles| {
+        div_total = bus.div_counter.plus(cycles)
+        div_incs = div_total // 256
+        with_div =
+            if div_incs > 0 {
+                div = bus.read(0xFF04)
+                { ..bus, div_counter: div_total % 256 }.poke(0xFF04, div.plus_wrap(div_incs.to_u8_wrap()))
+            } else {
+                { ..bus, div_counter: div_total }
+            }
+        tac = with_div.read(0xFF07)
+        if tac.bitwise_and(0x04) == 0x00 {
+            with_div
+        } else {
+            period =
+                match tac.bitwise_and(0x03) {
+                    0 => 1024
+                    1 => 16
+                    2 => 64
+                    _ => 256
+                }
+            tima_total = with_div.tima_counter.plus(cycles)
+            tima_incs = tima_total // period
+            advanced = { ..with_div, tima_counter: tima_total % period }
+            if tima_incs == 0 {
+                advanced
+            } else {
+                sum = advanced.read(0xFF05).to_u64().plus(tima_incs)
+                if sum > 0xFF {
+                    # Overflow: reload from TMA (wrap the excess through the reload value)
+                    tma = advanced.read(0xFF06).to_u64()
+                    reloaded = tma.plus(sum.minus(0x100) % U64.minus(0x100, tma))
+                    advanced.poke(0xFF05, reloaded.to_u8_wrap()).request_interrupt(2)
+                } else {
+                    advanced.poke(0xFF05, sum.to_u8_wrap())
+                }
+            }
+        }
+    }
+}
+
+test_rom : List(U8)
+test_rom = List.repeat(0x99, 0x200)
+
+# ROM loads at 0x0000 and is read-only
+expect Bus.init(test_rom).read(0x01FF) == 0x99
+expect Bus.init(test_rom).read(0x0200) == 0xFF # past the image: open bus
+expect Bus.init(test_rom).write(0x01FF, 0x55).read(0x01FF) == 0x99
+
+# Work RAM and HRAM round-trip
+expect Bus.init(test_rom).write(0xC123, 0x5A).read(0xC123) == 0x5A
+expect Bus.init(test_rom).write(0xFF85, 0x77).read(0xFF85) == 0x77
+
+# IE / IF are reachable through the bus
+expect Bus.init(test_rom).write(0xFFFF, 0x1F).read(0xFFFF) == 0x1F
+expect Bus.init(test_rom).request_interrupt(2).read(0xFF0F).bitwise_and(0x04) == 0x04
+
+# Serial capture: SB then SC bit 7 appends to the log ("P" = 0x50)
+expect Bus.init(test_rom).write(0xFF01, 0x50).write(0xFF02, 0x81).serial_out == [0x50]
+expect Bus.init(test_rom).write(0xFF01, 0x50).write(0xFF02, 0x01).serial_out == []
+
+# DIV: resets on write, increments every 256 cycles
+expect Bus.init(test_rom).write(0xFF04, 0x12).read(0xFF04) == 0x00
+expect Bus.init(test_rom).write(0xFF04, 0x00).tick(512).read(0xFF04) == 0x02
+expect Bus.init(test_rom).write(0xFF04, 0x00).tick(255).read(0xFF04) == 0x00
+
+# TIMA: counts at the TAC-selected rate; overflow reloads TMA and sets IF bit 2
+expect {
+    m = Bus.init(test_rom).poke(0xFF0F, 0x00).write(0xFF07, 0x05).tick(16) # TAC: enabled, period 16
+    m.read(0xFF05) == 0x01 and m.read(0xFF0F).bitwise_and(0x04) == 0x00
+}
+expect {
+    m = Bus.init(test_rom).poke(0xFF0F, 0x00).write(0xFF07, 0x05).write(0xFF05, 0xFF).write(0xFF06, 0xF0).tick(16)
+    m.read(0xFF05) == 0xF0 and m.read(0xFF0F).bitwise_and(0x04) == 0x04
+}
+# Timer disabled: TIMA holds still
+expect Bus.init(test_rom).write(0xFF07, 0x00).write(0xFF05, 0x10).tick(4096).read(0xFF05) == 0x10
+
+# OAM DMA: sprite table prepared in WRAM lands in OAM
+expect {
+    var m = Bus.init(test_rom)
+    var i = 0.U16
+    while i < 0xA0 {
+        m = m.write(U16.plus(0xC000, i), i.to_u8_wrap().bitwise_or(0x40))
+        i = i.plus(1)
+    }
+    m = m.write(0xFF46, 0xC0)
+    m.read(0xFE00) == 0x40 and m.read(0xFE9F) == 0xDF
+}
+
+# Joypad: select a group, read its buttons active-low
+expect {
+    m = Bus.init(test_rom).set_buttons({ ..Bus.no_buttons({}), a: Bool.True }).write(0xFF00, 0x10)
+    m.read(0xFF00).bitwise_and(0x0F) == 0x0E
+}
+expect {
+    m = Bus.init(test_rom).set_buttons({ ..Bus.no_buttons({}), down: Bool.True }).write(0xFF00, 0x20)
+    m.read(0xFF00).bitwise_and(0x0F) == 0x07
+}
+# Both groups selected AND together; none selected reads 0xF
+expect {
+    m = Bus.init(test_rom).set_buttons({ ..Bus.no_buttons({}), a: Bool.True, down: Bool.True }).write(0xFF00, 0x00)
+    m.read(0xFF00).bitwise_and(0x0F) == 0x06
+}
+expect {
+    m = Bus.init(test_rom).set_buttons({ ..Bus.no_buttons({}), a: Bool.True, down: Bool.True }).write(0xFF00, 0x30)
+    m.read(0xFF00).bitwise_and(0x0F) == 0x0F
+}
+
+# --- MBC banking ---
+
+set_byte : List(U8), U64, U8 -> List(U8)
+set_byte = |l, i, v| l.set(i, v) ?? l
+
+# 64-bank (1 MiB) image: first byte of each bank is the bank number
+big_rom : U8 -> List(U8)
+big_rom = |type_byte| {
+    var r = List.repeat(0x00, 0x4000 * 64)
+    var b = 0.U64
+    while b < 64 {
+        r = set_byte(r, b.shl_wrap(14), b.to_u8_wrap())
+        b = b.plus(1)
+    }
+    set_byte(r, 0x0147, type_byte)
+}
+
+# MBC1: default window is bank 1; 0x2000 write switches; raw 0 maps to 1
+expect Bus.init(big_rom(0x01)).read(0x4000) == 0x01
+expect Bus.init(big_rom(0x01)).write(0x2000, 0x02).read(0x4000) == 0x02
+expect Bus.init(big_rom(0x01)).write(0x2000, 0x00).read(0x4000) == 0x01
+expect Bus.init(big_rom(0x01)).write(0x2000, 0x02).read(0x0000) == 0x00 # bank 0 fixed
+
+# MBC1: bank2 extends the window bank (0x21 = bank2 1, low 1)
+expect Bus.init(big_rom(0x01)).write(0x2000, 0x01).write(0x4000, 0x01).read(0x4000) == 0x21
+# MBC1 mode 1: bank2 also maps the zero region
+expect Bus.init(big_rom(0x01)).write(0x4000, 0x01).write(0x6000, 0x01).read(0x0000) == 0x20
+expect Bus.init(big_rom(0x01)).write(0x4000, 0x01).read(0x0000) == 0x00 # mode 0: pinned
+
+# MBC3: 7-bit bank select, 0 maps to 1
+expect Bus.init(big_rom(0x11)).write(0x2000, 0x05).read(0x4000) == 0x05
+expect Bus.init(big_rom(0x11)).write(0x2000, 0x00).read(0x4000) == 0x01
+expect Bus.init(big_rom(0x11)).write(0x2000, 0x3F).read(0x4000) == 0x3F
+
+# MBC5: 8-bit low register, bank 0 selectable (no zero->one translation)
+expect Bus.init(big_rom(0x19)).read(0x4000) == 0x01 # power-on register value is 1
+expect Bus.init(big_rom(0x19)).write(0x2000, 0x05).read(0x4000) == 0x05
+expect Bus.init(big_rom(0x19)).write(0x2000, 0x00).read(0x4000) == 0x00
+# MBC5: ninth bit wires in above the low byte (bank 256+2 wraps 64 banks -> 2)
+expect Bus.init(big_rom(0x19)).write(0x2000, 0x02).write(0x3000, 0x01).read(0x4000) == 0x02
+expect Bus.init(big_rom(0x19)).write(0x2000, 0x42).write(0x3000, 0x01).read(0x4000) == 0x02 # 0x142 % 64
+# MBC5: the 0x3000 register does not disturb the low byte
+expect Bus.init(big_rom(0x19)).write(0x2000, 0x07).write(0x3000, 0x00).read(0x4000) == 0x07
+# MBC5: zero region stays bank 0
+expect Bus.init(big_rom(0x19)).write(0x2000, 0x05).read(0x0000) == 0x00
+# MBC5 RAM banking: 4-bit select, each bank keeps its own contents
+expect {
+    m =
+        Bus.init(big_rom(0x1A))
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x00)
+            .write(0xA000, 0x11)
+            .write(0x4000, 0x0F)
+            .write(0xA000, 0x22)
+    m.write(0x4000, 0x00).read(0xA000) == 0x11 and m.write(0x4000, 0x0F).read(0xA000) == 0x22
+}
+# MBC5 RAM: disabled reads 0xFF
+expect Bus.init(big_rom(0x1A)).write(0xA000, 0x55).read(0xA000) == 0xFF
+
+# Cartridge RAM: gated by enable; disabled reads 0xFF and drops writes
+expect Bus.init(big_rom(0x03)).write(0xA000, 0x55).read(0xA000) == 0xFF
+expect Bus.init(big_rom(0x03)).write(0x0000, 0x0A).write(0xA000, 0x55).read(0xA000) == 0x55
+expect Bus.init(big_rom(0x03)).write(0x0000, 0x0A).write(0xA000, 0x55).write(0x0000, 0x00).read(0xA000) == 0xFF
+
+# MBC3 RAM banking: each bank keeps its own contents
+expect {
+    m = Bus.init(big_rom(0x13))
+        .write(0x0000, 0x0A)
+        .write(0x4000, 0x00)
+        .write(0xA000, 0x01)
+        .write(0x4000, 0x01)
+        .write(0xA000, 0x02)
+    m.write(0x4000, 0x00).read(0xA000) == 0x01 and m.write(0x4000, 0x01).read(0xA000) == 0x02
+}
+# MBC3 RTC select: reads 0xFF (no clock), writes dropped
+expect Bus.init(big_rom(0x13)).write(0x0000, 0x0A).write(0x4000, 0x08).read(0xA000) == 0xFF
+
+# ROM-only: register writes are inert, RAM region is plain storage
+expect Bus.init(test_rom).write(0x2000, 0x02).read(0x01FF) == 0x99
+expect Bus.init(test_rom).write(0xA000, 0x77).read(0xA000) == 0x77
+
+# APU register read-back masks
+expect Bus.init(test_rom).write(0xFF11, 0x00).read(0xFF11) == 0x3F
+expect Bus.init(test_rom).write(0xFF12, 0x47).read(0xFF12) == 0x47
+expect Bus.init(test_rom).write(0xFF1A, 0x00).read(0xFF1A) == 0x7F
+expect Bus.init(test_rom).read(0xFF15) == 0xFF
+expect Bus.init(test_rom).read(0xFF1F) == 0xFF
+expect {
+    masks = [
+        (0xFF10, 0x80), (0xFF11, 0x3F), (0xFF12, 0x00), (0xFF13, 0xFF), (0xFF14, 0xBF),
+        (0xFF16, 0x3F), (0xFF17, 0x00), (0xFF18, 0xFF), (0xFF19, 0xBF), (0xFF1A, 0x7F),
+        (0xFF1B, 0xFF), (0xFF1C, 0x9F), (0xFF1D, 0xFF), (0xFF1E, 0xBF), (0xFF20, 0xFF),
+        (0xFF21, 0x00), (0xFF22, 0x00), (0xFF23, 0xBF), (0xFF24, 0x00), (0xFF25, 0x00),
+    ]
+    masks.fold(Bool.True, |ok, (addr, mask)| {
+        m = Bus.init(test_rom).write(addr, 0x00)
+        ok and m.read(addr) == mask
+    })
+}
+
+# NR52: power off clears and gates the register file; power returns
+expect {
+    m = Bus.init(test_rom).write(0xFF12, 0xF3).write(0xFF26, 0x00)
+    m.read(0xFF26) == 0x70 and m.read(0xFF12) == 0x00 and m.write(0xFF12, 0xF3).read(0xFF12) == 0x00
+}
+expect Bus.init(test_rom).write(0xFF26, 0x00).write(0xFF26, 0x80).read(0xFF26) == 0xF0
+
+# Register writes reach the event queue as address low bytes; NRx4 gated while off
+expect {
+    r = Bus.init(test_rom).write(0xFF19, 0x87).take_apu_events()
+    r.events == [0x19] and r.bus.take_apu_events().events == []
+}
+expect Bus.init(test_rom).write(0xFF26, 0x00).write(0xFF19, 0x87).apu_events == [0xF0]
+
+# Power-on emits its own event; a redundant on-write does not
+expect {
+    m = Bus.init(test_rom).write(0xFF26, 0x00).write(0xFF26, 0x80)
+    m.apu_events == [0xF0, 0xF1] and m.write(0xFF26, 0x80).apu_events == [0xF0, 0xF1]
+}
+
+# DMG: length registers load while powered off (duty bits stay 0); CGB gates them
+expect {
+    m = Bus.init(test_rom).write(0xFF26, 0x00).write(0xFF16, 0xFA)
+    m.apu_events == [0xF0, 0x16] and m.read_raw(0xFF16) == 0x3A
+}
+expect Bus.init(set_byte(test_rom, 0x0143, 0x80)).write(0xFF26, 0x00).write(0xFF16, 0xFA).apu_events == [0xF0]
+
+# --- CGB memory infrastructure ---
+
+cgb_rom : List(U8)
+cgb_rom = set_byte(test_rom, 0x0143, 0x80)
+
+# VBK: banks hold independent contents; readback is 0xFE | bank
+expect {
+    m = Bus.init(cgb_rom).write(0x8000, 0x11).write(0xFF4F, 0x01).write(0x8000, 0x22)
+    m.read(0x8000) == 0x22
+    and m.write(0xFF4F, 0x00).read(0x8000) == 0x11
+    and m.read(0xFF4F) == 0xFF
+    and m.write(0xFF4F, 0x00).read(0xFF4F) == 0xFE
+}
+
+# SVBK: bank switch preserves contents; 0 selects 1; C000 stays bank 0
+expect {
+    m = Bus.init(cgb_rom).write(0xD000, 0xAA).write(0xFF70, 0x02).write(0xD000, 0xBB)
+    m.read(0xD000) == 0xBB
+    and m.write(0xFF70, 0x01).read(0xD000) == 0xAA
+    and m.write(0xFF70, 0x00).read(0xD000) == 0xAA
+}
+expect Bus.init(cgb_rom).write(0xFF70, 0x05).read(0xFF70) == 0xFD
+expect Bus.init(cgb_rom).write(0xC123, 0x77).write(0xFF70, 0x04).read(0xC123) == 0x77
+
+# Palette RAM: auto-increment walk, then read back without it
+expect {
+    m = Bus.init(cgb_rom).write(0xFF68, 0x80).write(0xFF69, 0x1F).write(0xFF69, 0x7C)
+    m.read(0xFF68).bitwise_and(0x3F) == 0x02
+    and m.write(0xFF68, 0x00).read(0xFF69) == 0x1F
+    and m.write(0xFF68, 0x01).read(0xFF69) == 0x7C
+}
+# BG and OBJ palette memories are independent
+expect {
+    m = Bus.init(cgb_rom).write(0xFF68, 0x05).write(0xFF69, 0x33).write(0xFF6A, 0x05).write(0xFF6B, 0x44)
+    m.write(0xFF68, 0x05).read(0xFF69) == 0x33 and m.read(0xFF6B) == 0x44
+}
+# No auto-increment without bit 7
+expect Bus.init(cgb_rom).write(0xFF68, 0x03).write(0xFF69, 0x99).read(0xFF68).bitwise_and(0x3F) == 0x03
+
+# KEY1 stores the prepare bit; OPRI stores its bit
+expect Bus.init(cgb_rom).read(0xFF4D) == 0x7E
+expect Bus.init(cgb_rom).write(0xFF4D, 0x01).read(0xFF4D) == 0x7F
+expect Bus.init(cgb_rom).write(0xFF6C, 0x01).read(0xFF6C) == 0xFF
+expect Bus.init(cgb_rom).write(0xFF6C, 0x00).read(0xFF6C) == 0xFE
+
+# read_vram is bank-explicit regardless of the game's VBK selection
+expect {
+    m = Bus.init(cgb_rom).write(0x8000, 0x11).write(0xFF4F, 0x01).write(0x8000, 0x22)
+    Bus.read_vram(m, 0, 0x8000) == 0x11 and Bus.read_vram(m, 1, 0x8000) == 0x22
+}
+
+# DMG inertness: every CGB register reads 0xFF, writes change nothing
+expect {
+    m = Bus.init(test_rom)
+    m.write(0xFF4F, 0x01).read(0xFF4F) == 0xFF
+    and m.write(0xFF70, 0x03).read(0xFF70) == 0xFF
+    and m.write(0xFF68, 0x80).read(0xFF68) == 0xFF
+    and m.write(0xFF69, 0x12).read(0xFF69) == 0xFF
+    and m.read(0xFF4D) == 0xFF
+    and m.read(0xFF6C) == 0xFF
+}
+expect Bus.init(test_rom).write(0xFF4F, 0x01).write(0x8000, 0x33).write(0xFF4F, 0x00).read(0x8000) == 0x33
+
+# --- CGB double speed + VRAM DMA ---
+
+# KEY1 + STOP: toggle on armed STOP, clear prepare, report in bit 7
+expect {
+    m = Bus.init(cgb_rom).write(0xFF4D, 0x01)
+    m2 = Bus.stop_switch(m)
+    m3 = Bus.stop_switch(m2.write(0xFF4D, 0x01))
+    m2.read(0xFF4D) == 0xFE and m3.read(0xFF4D) == 0x7E
+}
+expect Bus.stop_switch(Bus.init(cgb_rom)).read(0xFF4D) == 0x7E
+expect Bus.stop_switch(Bus.init(test_rom).write(0xFF4D, 0x01)).read(0xFF4D) == 0xFF
+
+# GDMA: (len+1)x16 bytes, immediate, FF55 reads done afterwards
+expect {
+    m0 = Bus.init(cgb_rom).write(0xC000, 0xAB).write(0xC00F, 0xCD)
+    m = m0.write(0xFF51, 0xC0).write(0xFF52, 0x00).write(0xFF53, 0x00).write(0xFF54, 0x00).write(0xFF55, 0x00)
+    m.read(0x8000) == 0xAB and m.read(0x800F) == 0xCD and m.read(0xFF55) == 0xFF
+}
+# GDMA honors the selected VRAM bank
+expect {
+    m =
+        Bus.init(cgb_rom)
+            .write(0xC000, 0x77)
+            .write(0xFF4F, 0x01)
+            .write(0xFF51, 0xC0)
+            .write(0xFF52, 0x00)
+            .write(0xFF53, 0x00)
+            .write(0xFF54, 0x00)
+            .write(0xFF55, 0x00)
+    Bus.read_vram(m, 1, 0x8000) == 0x77 and Bus.read_vram(m, 0, 0x8000) == 0x00
+}
+# HBlank DMA: 16 bytes per hblank, counts down, 0xFF when done
+expect {
+    m0 =
+        Bus.init(cgb_rom)
+            .write(0xC000, 0x5A)
+            .write(0xC010, 0xA5)
+            .write(0xFF51, 0xC0)
+            .write(0xFF52, 0x00)
+            .write(0xFF53, 0x00)
+            .write(0xFF54, 0x00)
+            .write(0xFF55, 0x81)
+    m1 = Bus.hdma_hblank(m0)
+    m2 = Bus.hdma_hblank(m1)
+    m0.read(0xFF55) == 0x01
+    and m1.read(0xFF55) == 0x00
+    and m1.read(0x8000) == 0x5A
+    and m2.read(0xFF55) == 0xFF
+    and m2.read(0x8010) == 0xA5
+}
+# Writing bit-7-clear while active cancels
+expect Bus.init(cgb_rom).write(0xFF55, 0x85).write(0xFF55, 0x00).read(0xFF55) == 0xFF
+# DMG inert
+expect Bus.init(test_rom).write(0xFF55, 0x00).read(0xFF55) == 0xFF
+expect Bus.init(test_rom).read(0xFF51) == 0xFF
+
+rtc_input : U64 -> { buttons : { up : Bool, down : Bool, left : Bool, right : Bool, a : Bool, b : Bool, start : Bool, select : Bool }, now : U64 }
+rtc_input = |n| { buttons: Bus.no_buttons({}), now: n }
+
+# MBC3 RTC: first latch only syncs (no jump from epoch 0); the next
+# latch advances by elapsed wall time; reads without a new latch are stale
+expect {
+    m =
+        Bus.init(big_rom(0x10))
+            .set_input(rtc_input(1000))
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x08)
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+    s0 = m.read(0xA000)
+    m2 = m.set_input(rtc_input(1061)).write(0x6000, 0x00).write(0x6000, 0x01)
+    s1 = m2.read(0xA000)
+    mins = m2.write(0x4000, 0x09).read(0xA000)
+    stale = m2.set_input(rtc_input(2000)).write(0x4000, 0x08).read(0xA000)
+    s0 == 0 and s1 == 1 and mins == 1 and stale == 1
+}
+
+# MBC3 RTC: halt (dh bit 6) freezes the clock across elapsed time
+expect {
+    m =
+        Bus.init(big_rom(0x10))
+            .set_input(rtc_input(1000))
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x0C)
+            .write(0xA000, 0x40)
+            .set_input(rtc_input(5000))
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+    m.read(0xA000) == 0x40 and m.write(0x4000, 0x08).read(0xA000) == 0x00
+}
+
+# MBC3 RTC: 512 elapsed days set the sticky day-overflow carry (dh bit 7)
+expect {
+    m =
+        Bus.init(big_rom(0x10))
+            .set_input(rtc_input(1000))
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+            .set_input(rtc_input(44237800)) # 1000 + 512 days
+            .write(0x6000, 0x00)
+            .write(0x6000, 0x01)
+            .write(0x0000, 0x0A)
+    m.write(0x4000, 0x0C).read(0xA000) == 0x80 and m.write(0x4000, 0x0B).read(0xA000) == 0x00
+}
+
+# MBC3 RTC: selecting a clock register does not disturb cart RAM
+expect {
+    m =
+        Bus.init(big_rom(0x10))
+            .write(0x0000, 0x0A)
+            .write(0x4000, 0x00)
+            .write(0xA000, 0x33)
+            .write(0x4000, 0x08)
+            .write(0xA000, 0x15)
+            .write(0x4000, 0x00)
+    m.read(0xA000) == 0x33
+}
+
+# Save signal: RAM-disable-after-write bumps the counter once; an
+# enable/disable cycle with no writes does not
+expect {
+    m0 = Bus.init(big_rom(0x03)).write(0x0000, 0x0A).write(0xA000, 0x01)
+    m1 = m0.write(0x0000, 0x00)
+    m2 = m1.write(0x0000, 0x0A).write(0x0000, 0x00)
+    m0.cart.save_events == 0 and m1.cart.save_events == 1 and m2.cart.save_events == 1
+}
+
+# (Battery footer round-trip, halted-clock persistence, and legacy
+# 44-byte footers are unit-tested against the Cartridge API directly —
+# see Cartridge.roc.)
