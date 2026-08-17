@@ -80,8 +80,8 @@
 
 ## 5. Dead annotation cleanup (separable commit)
 
-- [ ] 5.1 Remove the `ppu : Ppu` annotation line in `Ppu.init` (`Ppu.roc:16`)
+- [x] 5.1 Remove the `ppu : Ppu` annotation line in `Ppu.init` (`Ppu.roc:16`)
       and the `apu : Apu` line in `Apu.init` (`Apu.roc:55`); leave `base : Bus`
       in `Bus.init` and the `gb : GameBoy` annotations alone (proposal — they
       have methods called on them before return and are load-bearing)
-- [ ] 5.2 `roc check package/main.roc` and `roc test package/main.roc` pass
+- [x] 5.2 `roc check package/main.roc` and `roc test package/main.roc` pass

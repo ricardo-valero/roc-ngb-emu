@@ -13,7 +13,6 @@ Ppu := {
 }.{
     init : {} -> Ppu
     init = |_| {
-        ppu : Ppu
         ppu = { dots: 0, framebuffer: List.repeat(0x7FFF, 23040), window_line: 0 }
         ppu
     }

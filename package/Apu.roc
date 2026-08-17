@@ -52,7 +52,6 @@ Apu := {
 
     init : {} -> Apu
     init = |_| {
-        apu : Apu
         apu = {
             ch1: blank({}),
             ch2: blank({}),
