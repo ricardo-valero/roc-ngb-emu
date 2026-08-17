@@ -117,8 +117,8 @@ hex2 = |v| hex4(v.to_u16())
 
 debug_line : GameBoy -> Str
 debug_line = |gb| {
-    pc = gb.reg.read16(ProgramCounter)
-    "pc=${hex4(pc)} op=${hex2(gb.peek(pc))} ly=${hex2(gb.peek(0xFF44))} lcdc=${hex2(gb.peek(0xFF40))} stat=${hex2(gb.peek(0xFF41))} ie=${hex2(gb.peek(0xFFFF))} if=${hex2(gb.peek(0xFF0F))} key1=${hex2(gb.peek(0xFF4D))} ime=${if gb.ime { "1" } else { "0" }} halted=${if gb.halted { "1" } else { "0" }}"
+    pc = gb.cpu.reg.read16(ProgramCounter)
+    "pc=${hex4(pc)} op=${hex2(gb.peek(pc))} ly=${hex2(gb.peek(0xFF44))} lcdc=${hex2(gb.peek(0xFF40))} stat=${hex2(gb.peek(0xFF41))} ie=${hex2(gb.peek(0xFFFF))} if=${hex2(gb.peek(0xFF0F))} key1=${hex2(gb.peek(0xFF4D))} ime=${if gb.cpu.ime { "1" } else { "0" }} halted=${if gb.cpu.halted { "1" } else { "0" }}"
 }
 
 # BGR555 framebuffer to RGBA8 (5-bit channels expanded to 8)

@@ -447,7 +447,7 @@ run_case = |case| {
 		check_u8("h", r.h, case.final.h),
 		check_u8("l", r.l, case.final.l),
 		check_bool("ime", r.ime, case.final.ime),
-		check_bool("ei", g.ei_pending, case.final.ei == 1),
+		check_bool("ei", g.cpu.ei_pending, case.final.ei == 1),
 		check_u64("cycles", cycles, case.m_cycles * 4),
 		check_trace(got_trace, case.accesses),
 	]

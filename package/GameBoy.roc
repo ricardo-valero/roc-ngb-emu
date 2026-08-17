@@ -1,12 +1,12 @@
-# SM83 execution core: fetch/decode/execute over the memory bus.
-# `step` is pure state -> state; cycles are reported by execute because only
-# it knows conditional outcomes (taken vs. not-taken).
+# SoC composition: the DMG-CPU chip — the one place the CPU core, bus,
+# PPU, and APU are wired together and scheduled — plus the
+# harness/frontend API (raw single-step machines, battery, breakpoints,
+# frame stepping).
 
 import /Cartridge
 import /Cartridge/Header
 import /Joypad
-import /Cpu/Alu
-import /Cpu/Instruction
+import /Cpu
 import /Cpu/Register
 import /Cpu/Register/Status
 import /Apu
@@ -18,31 +18,25 @@ import /Ppu
 SingleStep : { pc : U16, sp : U16, a : U8, b : U8, c : U8, d : U8, e : U8, f : U8, h : U8, l : U8, ime : Bool, mem : List(U8) }
 
 GameBoy := {
-    reg : Register,
+    cpu : Cpu,
     bus : Bus,
     ppu : Ppu,
     apu : Apu,
-    ime : Bool,
-    halted : Bool,
-    ei_pending : Bool,
     breakpoint : [None, At(U16)],
 }.{
     init : List(U8) -> GameBoy
     init = |rom| {
         gb : GameBoy
         gb = {
-            reg: Register.init({}),
+            cpu: Cpu.init({}),
             bus: Bus.init(rom),
             ppu: Ppu.init({}),
             apu: Apu.init({}),
-            ime: Bool.False,
-            halted: Bool.False,
-            ei_pending: Bool.False,
             breakpoint: None,
         }
         # CGB carts boot with A = 0x11 — how games detect the console
         if gb.bus.is_cgb() {
-            { ..gb, reg: gb.reg.write8(Accumulator, 0x11) }
+            { ..gb, cpu: { ..gb.cpu, reg: gb.cpu.reg.write8(Accumulator, 0x11) } }
         } else {
             gb
         }
@@ -54,6 +48,11 @@ GameBoy := {
     # Bus read for harnesses (e.g. Blargg's memory-reporting test protocol)
     peek : GameBoy, U16 -> U8
     peek = |gb, addr| gb.bus.read(addr)
+
+    # Bus write for harnesses — peek's counterpart: the mapped write, MBC
+    # control included (no access trace; that lives on the CPU path)
+    poke : GameBoy, U16, U8 -> GameBoy
+    poke = |gb, addr, value| { ..gb, bus: gb.bus.write(addr, value) }
 
     framebuffer : GameBoy -> List(U16)
     framebuffer = |gb| gb.ppu.frame()
@@ -168,7 +167,7 @@ GameBoy := {
         var hit = Bool.False
         var first = Bool.True
         while budget > 0 and stopped == Bool.False {
-            if first == Bool.False and at_breakpoint(gb, gb.reg.read16(ProgramCounter)) {
+            if first == Bool.False and at_breakpoint(gb, gb.cpu.reg.read16(ProgramCounter)) {
                 stopped = Bool.True
                 hit = Bool.True
             } else {
@@ -198,23 +197,25 @@ GameBoy := {
     from_raw = |s| {
         gb : GameBoy
         gb = {
-            reg: Register.init({})
-                .write16(ProgramCounter, s.pc)
-                .write16(StackPointer, s.sp)
-                .write8(Accumulator, s.a)
-                .write8(B, s.b)
-                .write8(C, s.c)
-                .write8(D, s.d)
-                .write8(E, s.e)
-                .write8(Status, s.f)
-                .write8(H, s.h)
-                .write8(L, s.l),
+            cpu: {
+                reg: Register.init({})
+                    .write16(ProgramCounter, s.pc)
+                    .write16(StackPointer, s.sp)
+                    .write8(Accumulator, s.a)
+                    .write8(B, s.b)
+                    .write8(C, s.c)
+                    .write8(D, s.d)
+                    .write8(E, s.e)
+                    .write8(Status, s.f)
+                    .write8(H, s.h)
+                    .write8(L, s.l),
+                ime: s.ime,
+                halted: Bool.False,
+                ei_pending: Bool.False,
+            },
             bus: Bus.flat(s.mem),
             ppu: Ppu.init({}),
             apu: Apu.init({}),
-            ime: s.ime,
-            halted: Bool.False,
-            ei_pending: Bool.False,
             breakpoint: None,
         }
         gb
@@ -223,24 +224,27 @@ GameBoy := {
     # Read raw state back out (inverse of from_raw for flat machines)
     raw : GameBoy -> SingleStep
     raw = |gb| {
-        pc: gb.reg.read16(ProgramCounter),
-        sp: gb.reg.read16(StackPointer),
-        a: gb.reg.read8(Accumulator),
-        b: gb.reg.read8(B),
-        c: gb.reg.read8(C),
-        d: gb.reg.read8(D),
-        e: gb.reg.read8(E),
-        f: gb.reg.read8(Status),
-        h: gb.reg.read8(H),
-        l: gb.reg.read8(L),
-        ime: gb.ime,
+        pc: gb.cpu.reg.read16(ProgramCounter),
+        sp: gb.cpu.reg.read16(StackPointer),
+        a: gb.cpu.reg.read8(Accumulator),
+        b: gb.cpu.reg.read8(B),
+        c: gb.cpu.reg.read8(C),
+        d: gb.cpu.reg.read8(D),
+        e: gb.cpu.reg.read8(E),
+        f: gb.cpu.reg.read8(Status),
+        h: gb.cpu.reg.read8(H),
+        l: gb.cpu.reg.read8(L),
+        ime: gb.cpu.ime,
         mem: gb.bus.mem,
     }
 
     # Execute exactly one instruction: no interrupt poll or dispatch, no
     # timer/PPU/APU ticks. What the vectors mean by "step".
     step_instruction : GameBoy -> (GameBoy, U64)
-    step_instruction = |gb| run_bare(gb)
+    step_instruction = |gb| {
+        r = gb.cpu.step_instruction(gb.bus)
+        ({ ..gb, cpu: r.cpu, bus: r.bus }, r.cycles)
+    }
 
     # The ordered memory accesses of everything stepped so far (empty
     # unless the machine was built by from_raw)
@@ -253,19 +257,8 @@ GameBoy := {
 
     step : GameBoy -> (GameBoy, U64)
     step = |gb| {
-        pending = gb.bus.read(0xFFFF).bitwise_and(gb.bus.read(0xFF0F)).bitwise_and(0x1F)
-        if gb.ime and pending != 0x00 {
-            dispatch(gb, pending)
-        } else if gb.halted {
-            if pending != 0x00 {
-                # Wake regardless of IME; without IME no dispatch happens
-                run({ ..gb, halted: Bool.False })
-            } else {
-                finish(gb, 4)
-            }
-        } else {
-            run(gb)
-        }
+        r = gb.cpu.step(gb.bus)
+        finish({ ..gb, cpu: r.cpu, bus: r.bus }, r.cycles)
     }
 
     # Every path leaves through here so the timer, PPU, and APU see all
@@ -278,402 +271,6 @@ GameBoy := {
         a = gb.apu.tick(r.bus, video_cycles)
         ({ ..gb, bus: a.bus, ppu: r.ppu, apu: a.apu }, cycles)
     }
-
-    dispatch : GameBoy, U8 -> (GameBoy, U64)
-    dispatch = |gb, pending| {
-        bit =
-            if pending.bitwise_and(0x01) != 0x00 {
-                0
-            } else if pending.bitwise_and(0x02) != 0x00 {
-                1
-            } else if pending.bitwise_and(0x04) != 0x00 {
-                2
-            } else if pending.bitwise_and(0x08) != 0x00 {
-                3
-            } else {
-                4
-            }
-        gb1 = push16(gb, gb.reg.read16(ProgramCounter))
-        bus2 = gb1.bus.poke(0xFF0F, gb1.bus.read(0xFF0F).bitwise_and(U8.shl_wrap(1, bit).bitwise_not()))
-        reg2 = gb1.reg.write16(ProgramCounter, bit.to_u16().shl_wrap(3).plus(0x0040))
-        finish({ ..gb1, reg: reg2, bus: bus2, ime: Bool.False, halted: Bool.False }, 20)
-    }
-
-    run : GameBoy -> (GameBoy, U64)
-    run = |gb0| match run_bare(gb0) { (gb, cycles) => finish(gb, cycles) }
-
-    # The instruction itself, peripherals excluded — `run` wraps this in
-    # `finish`; `step_instruction` exposes it to the single-step harness
-    run_bare : GameBoy -> (GameBoy, U64)
-    run_bare = |gb0| {
-        was_ei_pending = gb0.ei_pending
-        pc = gb0.reg.read16(ProgramCounter)
-        op = mem_read(gb0, pc)
-        r = execute(op.gb, pc.plus_wrap(1), Instruction.lookup(op.value))
-        gb1 = { ..r.gb, reg: r.gb.reg.write16(ProgramCounter, r.pc) }
-        # EI takes effect after the instruction that follows it (DI cancels)
-        gb2 =
-            if was_ei_pending and gb1.ei_pending {
-                { ..gb1, ime: Bool.True, ei_pending: Bool.False }
-            } else {
-                gb1
-            }
-        (gb2, r.cycles)
-    }
-
-    imm16 : GameBoy, U16 -> { gb : GameBoy, value : U16 }
-    imm16 = |gb, pc| {
-        lo = mem_read(gb, pc)
-        hi = mem_read(lo.gb, pc.plus_wrap(1))
-        { gb: hi.gb, value: hi.value.to_u16().shl_wrap(8).bitwise_or(lo.value.to_u16()) }
-    }
-
-    sign_extend : U8 -> U16
-    sign_extend = |e8|
-        if e8 >= 0x80 { e8.to_u16().bitwise_or(0xFF00) } else { e8.to_u16() }
-
-    mem_write : GameBoy, U16, U8 -> GameBoy
-    mem_write = |gb, addr, value| { ..gb, bus: gb.bus.write(addr, value).trace_access(addr, value, Write) }
-
-    # CPU-path read, threading the Bus so the access trace stays in
-    # program order. With tracing off (every non-harness machine) this is
-    # the plain pure read.
-    mem_read : GameBoy, U16 -> { gb : GameBoy, value : U8 }
-    mem_read = |gb, addr|
-        match gb.bus.trace {
-            NoTrace => { gb: gb, value: gb.bus.read(addr) }
-            Trace(_) => {
-                r = gb.bus.read_traced(addr)
-                { gb: { ..gb, bus: r.bus }, value: r.value }
-            }
-        }
-
-    push16 : GameBoy, U16 -> GameBoy
-    push16 = |gb, value| {
-        sp = gb.reg.read16(StackPointer)
-        gb2 = mem_write(mem_write(gb, sp.minus_wrap(1), value.shr_zf_wrap(8).to_u8_wrap()), sp.minus_wrap(2), value.to_u8_wrap())
-        { ..gb2, reg: gb2.reg.write16(StackPointer, sp.minus_wrap(2)) }
-    }
-
-    pop16 : GameBoy -> { gb : GameBoy, value : U16 }
-    pop16 = |gb| {
-        sp = gb.reg.read16(StackPointer)
-        lo = mem_read(gb, sp) # hardware pops low first; the trace keeps the order honest
-        hi = mem_read(lo.gb, sp.plus_wrap(1))
-        { gb: { ..hi.gb, reg: hi.gb.reg.write16(StackPointer, sp.plus_wrap(2)) }, value: hi.value.to_u16().shl_wrap(8).bitwise_or(lo.value.to_u16()) }
-    }
-
-    apply_flags = |reg, delta| reg.write8(Status, delta(reg.read8(Status)))
-
-    carry_flag : GameBoy -> Bool
-    carry_flag = |gb| Status.check(Carry, gb.reg.read8(Status))
-
-    # Read an 8-bit source operand; returns extra cycles beyond the base cost
-    src8 = |gb, pc, mode|
-        match mode {
-            Immediate => {
-                rd = mem_read(gb, pc)
-                { gb: rd.gb, value: rd.value, pc: pc.plus_wrap(1), cycles: 4.U64 }
-            }
-
-            Direct8(r) => { gb: gb, value: gb.reg.read8(r), pc: pc, cycles: 0.U64 }
-            Direct16(_) => { gb: gb, value: 0xFF, pc: pc, cycles: 0.U64 } # not an 8-bit operand
-            Indirect(target) =>
-                match target {
-                    C => {
-                        rd = mem_read(gb, gb.reg.read8(C).to_u16().plus(0xFF00))
-                        { gb: rd.gb, value: rd.value, pc: pc, cycles: 4.U64 }
-                    }
-
-                    BC => {
-                        rd = mem_read(gb, gb.reg.read16(BC))
-                        { gb: rd.gb, value: rd.value, pc: pc, cycles: 4.U64 }
-                    }
-
-                    DE => {
-                        rd = mem_read(gb, gb.reg.read16(DE))
-                        { gb: rd.gb, value: rd.value, pc: pc, cycles: 4.U64 }
-                    }
-
-                    HL => {
-                        rd = mem_read(gb, gb.reg.read16(HL))
-                        { gb: rd.gb, value: rd.value, pc: pc, cycles: 4.U64 }
-                    }
-
-                    HLPostIncrement => {
-                        hl = gb.reg.read16(HL)
-                        rd = mem_read(gb, hl)
-                        { gb: { ..rd.gb, reg: rd.gb.reg.write16(HL, hl.plus_wrap(1)) }, value: rd.value, pc: pc, cycles: 4.U64 }
-                    }
-
-                    HLPostDecrement => {
-                        hl = gb.reg.read16(HL)
-                        rd = mem_read(gb, hl)
-                        { gb: { ..rd.gb, reg: rd.gb.reg.write16(HL, hl.minus_wrap(1)) }, value: rd.value, pc: pc, cycles: 4.U64 }
-                    }
-
-                    Word8Operand => {
-                        n = mem_read(gb, pc)
-                        rd = mem_read(n.gb, n.value.to_u16().plus(0xFF00))
-                        { gb: rd.gb, value: rd.value, pc: pc.plus_wrap(1), cycles: 8.U64 }
-                    }
-
-                    Word16Operand => {
-                        addr = imm16(gb, pc)
-                        rd = mem_read(addr.gb, addr.value)
-                        { gb: rd.gb, value: rd.value, pc: pc.plus_wrap(2), cycles: 12.U64 }
-                    }
-                }
-        }
-
-    # Write an 8-bit destination operand
-    dst8 = |gb, pc, mode, value|
-        match mode {
-            Direct8(r) => { gb: { ..gb, reg: gb.reg.write8(r, value) }, pc: pc, cycles: 0.U64 }
-            Indirect(target) =>
-                match target {
-                    C => { gb: mem_write(gb, gb.reg.read8(C).to_u16().plus(0xFF00), value), pc: pc, cycles: 4.U64 }
-                    BC => { gb: mem_write(gb, gb.reg.read16(BC), value), pc: pc, cycles: 4.U64 }
-                    DE => { gb: mem_write(gb, gb.reg.read16(DE), value), pc: pc, cycles: 4.U64 }
-                    HL => { gb: mem_write(gb, gb.reg.read16(HL), value), pc: pc, cycles: 4.U64 }
-                    HLPostIncrement => {
-                        hl = gb.reg.read16(HL)
-                        gb2 = mem_write(gb, hl, value)
-                        { gb: { ..gb2, reg: gb2.reg.write16(HL, hl.plus_wrap(1)) }, pc: pc, cycles: 4.U64 }
-                    }
-
-                    HLPostDecrement => {
-                        hl = gb.reg.read16(HL)
-                        gb2 = mem_write(gb, hl, value)
-                        { gb: { ..gb2, reg: gb2.reg.write16(HL, hl.minus_wrap(1)) }, pc: pc, cycles: 4.U64 }
-                    }
-
-                    Word8Operand => {
-                        n = mem_read(gb, pc)
-                        { gb: mem_write(n.gb, n.value.to_u16().plus(0xFF00), value), pc: pc.plus_wrap(1), cycles: 8.U64 }
-                    }
-
-                    Word16Operand => {
-                        addr = imm16(gb, pc)
-                        { gb: mem_write(addr.gb, addr.value, value), pc: pc.plus_wrap(2), cycles: 12.U64 }
-                    }
-                }
-
-            _ => { gb: gb, pc: pc, cycles: 0.U64 } # not an 8-bit destination
-        }
-
-    read16m = |gb, mode|
-        match mode {
-            Direct16(rr) => gb.reg.read16(rr)
-            _ => 0x0000
-        }
-
-    write16m = |gb, mode, value|
-        match mode {
-            Direct16(rr) => { ..gb, reg: gb.reg.write16(rr, value) }
-            _ => gb
-        }
-
-    # Accumulator + flags writeback shared by the 8-bit ALU instructions
-    acc_result = |gb, pc, cycles, (value, delta)| {
-        reg2 = apply_flags(gb.reg.write8(Accumulator, value), delta)
-        { gb: { ..gb, reg: reg2 }, pc: pc, cycles: cycles }
-    }
-
-    # RLCA/RRCA/RLA/RRA force Z clear, unlike their CB twins
-    rotate_a = |gb, pc, (value, delta)| {
-        reg2 = gb.reg.write8(Accumulator, value)
-        { gb: { ..gb, reg: reg2.write8(Status, delta(reg2.read8(Status)).bitwise_and(0x7F)) }, pc: pc, cycles: 4.U64 }
-    }
-
-    flags_only = |gb, pc, delta|
-        { gb: { ..gb, reg: apply_flags(gb.reg, delta) }, pc: pc, cycles: 4.U64 }
-
-    alu8 = |gb, pc, mode, op| {
-        s = src8(gb, pc, mode)
-        acc_result(s.gb, s.pc, s.cycles.plus(4), op(s.gb.reg.read8(Accumulator), s.value))
-    }
-
-    # Read-modify-write (INC/DEC and the CB rotate/shift/set/res family)
-    rmw = |gb0, pc, dst, src, base, op| {
-        s = src8(gb0, pc, src)
-        match op(s.value) {
-            (value, delta) => {
-                gb1 = { ..s.gb, reg: apply_flags(s.gb.reg, delta) }
-                w = dst8(gb1, s.pc, dst, value)
-                { gb: w.gb, pc: w.pc, cycles: base.plus(s.cycles).plus(w.cycles) }
-            }
-        }
-    }
-
-    execute = |gb, pc, instr|
-        match instr {
-            Nop => { gb: gb, pc: pc, cycles: 4.U64 }
-            Stop => { gb: { ..gb, bus: gb.bus.stop_switch() }, pc: pc.plus_wrap(1), cycles: 4.U64 } # speed switch when armed; else a NOP that skips its padding
-            Halt => { gb: { ..gb, halted: Bool.True }, pc: pc, cycles: 4.U64 }
-            Illegal => { gb: gb, pc: pc, cycles: 4.U64 } # real hardware locks up
-            Unknown => { gb: gb, pc: pc, cycles: 4.U64 }
-            Prefix => {
-                cb = mem_read(gb, pc)
-                execute_cb(cb.gb, pc.plus_wrap(1), cb.value)
-            }
-            Interrupts(Enable) => { gb: { ..gb, ei_pending: Bool.True }, pc: pc, cycles: 4.U64 }
-            Interrupts(Disable) => { gb: { ..gb, ime: Bool.False, ei_pending: Bool.False }, pc: pc, cycles: 4.U64 }
-            CarryFlag(Set) => flags_only(gb, pc, Status.modify(Unchanged, Value(Bool.False), Value(Bool.False), Value(Bool.True)))
-            CarryFlag(Complement) => flags_only(gb, pc, Status.modify(Unchanged, Value(Bool.False), Value(Bool.False), Complement))
-            DecimalAdjustAccumulator => {
-                f = gb.reg.read8(Status)
-                acc_result(gb, pc, 4, Alu.daa(gb.reg.read8(Accumulator), Status.check(Subtract, f), Status.check(HalfCarry, f), Status.check(Carry, f)))
-            }
-
-            ComplementAccumulator => acc_result(gb, pc, 4, Alu.complement(gb.reg.read8(Accumulator)))
-            RotateCircularAccumulator(Left) => rotate_a(gb, pc, Alu.rlc(gb.reg.read8(Accumulator)))
-            RotateCircularAccumulator(Right) => rotate_a(gb, pc, Alu.rrc(gb.reg.read8(Accumulator)))
-            RotateAccumulator(Left) => rotate_a(gb, pc, Alu.rl(gb.reg.read8(Accumulator), carry_flag(gb)))
-            RotateAccumulator(Right) => rotate_a(gb, pc, Alu.rr(gb.reg.read8(Accumulator), carry_flag(gb)))
-            Add(mode) => alu8(gb, pc, mode, Alu.add)
-            Sub(mode) => alu8(gb, pc, mode, Alu.sub)
-            And(mode) => alu8(gb, pc, mode, Alu.and_a)
-            Or(mode) => alu8(gb, pc, mode, Alu.or_a)
-            Xor(mode) => alu8(gb, pc, mode, Alu.xor_a)
-            Adc(mode) => alu8(gb, pc, mode, |a, b| Alu.adc(a, b, carry_flag(gb)))
-            Sbc(mode) => alu8(gb, pc, mode, |a, b| Alu.sbc(a, b, carry_flag(gb)))
-            Compare(mode) => {
-                s = src8(gb, pc, mode)
-                match Alu.compare(s.gb.reg.read8(Accumulator), s.value) {
-                    (_, delta) => { gb: { ..s.gb, reg: apply_flags(s.gb.reg, delta) }, pc: s.pc, cycles: s.cycles.plus(4) }
-                }
-            }
-
-            Inc(dst, src) => rmw(gb, pc, dst, src, 4.U64, Alu.inc)
-            Dec(dst, src) => rmw(gb, pc, dst, src, 4.U64, Alu.dec)
-            Add16(mode) =>
-                match Alu.add16(gb.reg.read16(HL), read16m(gb, mode)) {
-                    (value, delta) => { gb: { ..gb, reg: apply_flags(gb.reg.write16(HL, value), delta) }, pc: pc, cycles: 8.U64 }
-                }
-
-            Inc16(dst, _) => { gb: write16m(gb, dst, read16m(gb, dst).plus_wrap(1)), pc: pc, cycles: 8.U64 }
-            Dec16(dst, _) => { gb: write16m(gb, dst, read16m(gb, dst).minus_wrap(1)), pc: pc, cycles: 8.U64 }
-            AddStackPointerImmediate => {
-                e8 = mem_read(gb, pc)
-                match Alu.add_sp(e8.gb.reg.read16(StackPointer), e8.value) {
-                    (value, delta) => { gb: { ..e8.gb, reg: apply_flags(e8.gb.reg.write16(StackPointer, value), delta) }, pc: pc.plus_wrap(1), cycles: 16.U64 }
-                }
-            }
-
-            LoadHLStackPointerImmediate => {
-                e8 = mem_read(gb, pc)
-                match Alu.add_sp(e8.gb.reg.read16(StackPointer), e8.value) {
-                    (value, delta) => { gb: { ..e8.gb, reg: apply_flags(e8.gb.reg.write16(HL, value), delta) }, pc: pc.plus_wrap(1), cycles: 12.U64 }
-                }
-            }
-
-            Load(dst, src) => {
-                s = src8(gb, pc, src)
-                w = dst8(s.gb, s.pc, dst, s.value)
-                { gb: w.gb, pc: w.pc, cycles: s.cycles.plus(w.cycles).plus(4) }
-            }
-
-            Load16(Direct16(StackPointer), Direct16(HL)) =>
-                { gb: { ..gb, reg: gb.reg.write16(StackPointer, gb.reg.read16(HL)) }, pc: pc, cycles: 8.U64 }
-            Load16(Indirect(Word16Operand), Direct16(StackPointer)) => {
-                addr = imm16(gb, pc)
-                sp = addr.gb.reg.read16(StackPointer)
-                gb2 = mem_write(mem_write(addr.gb, addr.value, sp.to_u8_wrap()), addr.value.plus_wrap(1), sp.shr_zf_wrap(8).to_u8_wrap())
-                { gb: gb2, pc: pc.plus_wrap(2), cycles: 20.U64 }
-            }
-
-            Load16(dst, Immediate) => {
-                nn = imm16(gb, pc)
-                { gb: write16m(nn.gb, dst, nn.value), pc: pc.plus_wrap(2), cycles: 12.U64 }
-            }
-            Load16(_, _) => { gb: gb, pc: pc, cycles: 4.U64 } # no other encodings exist
-            Push(mode) => { gb: push16(gb, read16m(gb, mode)), pc: pc, cycles: 16.U64 }
-            Pop(mode) => {
-                p = pop16(gb)
-                { gb: write16m(p.gb, mode, p.value), pc: pc, cycles: 12.U64 }
-            }
-
-            Jump(_, HL) => { gb: gb, pc: gb.reg.read16(HL), cycles: 4.U64 }
-            Jump(condition, Immediate) => {
-                target = imm16(gb, pc)
-                if Instruction.condition_met(condition, target.gb.reg.read8(Status)) {
-                    { gb: target.gb, pc: target.value, cycles: 16.U64 }
-                } else {
-                    { gb: target.gb, pc: pc.plus_wrap(2), cycles: 12.U64 }
-                }
-            }
-
-            Branch(condition) => {
-                e8 = mem_read(gb, pc)
-                offset = sign_extend(e8.value)
-                after = pc.plus_wrap(1)
-                if Instruction.condition_met(condition, e8.gb.reg.read8(Status)) {
-                    { gb: e8.gb, pc: after.plus_wrap(offset), cycles: 12.U64 }
-                } else {
-                    { gb: e8.gb, pc: after, cycles: 8.U64 }
-                }
-            }
-
-            Call(condition) => {
-                target = imm16(gb, pc)
-                after = pc.plus_wrap(2)
-                if Instruction.condition_met(condition, target.gb.reg.read8(Status)) {
-                    { gb: push16(target.gb, after), pc: target.value, cycles: 24.U64 }
-                } else {
-                    { gb: target.gb, pc: after, cycles: 12.U64 }
-                }
-            }
-
-            Return(Always) => {
-                p = pop16(gb)
-                { gb: p.gb, pc: p.value, cycles: 16.U64 }
-            }
-
-            Return(condition) =>
-                if Instruction.condition_met(condition, gb.reg.read8(Status)) {
-                    p = pop16(gb)
-                    { gb: p.gb, pc: p.value, cycles: 20.U64 }
-                } else {
-                    { gb: gb, pc: pc, cycles: 8.U64 }
-                }
-
-            ReturnAndEnableInterrupts => {
-                p = pop16(gb)
-                { gb: { ..p.gb, ime: Bool.True }, pc: p.value, cycles: 16.U64 }
-            }
-
-            Restart(addr) => { gb: push16(gb, pc), pc: addr.to_u16(), cycles: 16.U64 }
-        }
-
-    execute_cb = |gb, pc, byte|
-        match Instruction.lookup_prefixed(byte) {
-            Bit(index, mode) => {
-                s = src8(gb, pc, mode)
-                { gb: { ..s.gb, reg: apply_flags(s.gb.reg, Alu.bit_test(index, s.value)) }, pc: s.pc, cycles: s.cycles.plus(8) }
-            }
-
-            Set(index, mode) => {
-                s = src8(gb, pc, mode)
-                w = dst8(s.gb, s.pc, mode, Alu.set_bit(index, s.value))
-                { gb: w.gb, pc: w.pc, cycles: s.cycles.plus(w.cycles).plus(8) }
-            }
-
-            Reset(index, mode) => {
-                s = src8(gb, pc, mode)
-                w = dst8(s.gb, s.pc, mode, Alu.clear_bit(index, s.value))
-                { gb: w.gb, pc: w.pc, cycles: s.cycles.plus(w.cycles).plus(8) }
-            }
-
-            Rotate(Left, mode) => rmw(gb, pc, mode, mode, 8.U64, |v| Alu.rl(v, carry_flag(gb)))
-            Rotate(Right, mode) => rmw(gb, pc, mode, mode, 8.U64, |v| Alu.rr(v, carry_flag(gb)))
-            RotateCircular(Left, mode) => rmw(gb, pc, mode, mode, 8.U64, Alu.rlc)
-            RotateCircular(Right, mode) => rmw(gb, pc, mode, mode, 8.U64, Alu.rrc)
-            ShiftArithmetic(Left, mode) => rmw(gb, pc, mode, mode, 8.U64, Alu.sla)
-            ShiftArithmetic(Right, mode) => rmw(gb, pc, mode, mode, 8.U64, Alu.sra)
-            ShiftLogical(Right, mode) => rmw(gb, pc, mode, mode, 8.U64, Alu.srl)
-            Swap(mode) => rmw(gb, pc, mode, mode, 8.U64, Alu.swap)
-        }
 }
 
 # --- step semantics ---
@@ -691,14 +288,14 @@ cycles_of = |gb| match gb.step() { (_, c) => c }
 expect {
     plain = List.repeat(0x00.U8, 0x8000)
     cgb = plain.set(0x0143, 0x80) ?? plain
-    GameBoy.init(cgb).reg.read8(Accumulator) == 0x11
-    and GameBoy.init(plain).reg.read8(Accumulator) == 0x01
+    GameBoy.init(cgb).cpu.reg.read8(Accumulator) == 0x11
+    and GameBoy.init(plain).cpu.reg.read8(Accumulator) == 0x01
 }
 
 # LD A, 0x2A: A loaded, PC advanced by 2, 8 cycles
 expect {
     g = after_step(GameBoy.init(rom_with([0x3E, 0x2A])))
-    g.reg.read8(Accumulator) == 0x2A and g.reg.read16(ProgramCounter) == 0x0102
+    g.cpu.reg.read8(Accumulator) == 0x2A and g.cpu.reg.read16(ProgramCounter) == 0x0102
 }
 expect cycles_of(GameBoy.init(rom_with([0x3E, 0x2A]))) == 8
 
@@ -706,31 +303,31 @@ expect cycles_of(GameBoy.init(rom_with([0x3E, 0x2A]))) == 8
 expect cycles_of(GameBoy.init(rom_with([0x20, 0x05]))) == 8
 expect {
     match GameBoy.init(rom_with([0x28, 0x05])).step() {
-        (g, c) => c == 12 and g.reg.read16(ProgramCounter) == 0x0107
+        (g, c) => c == 12 and g.cpu.reg.read16(ProgramCounter) == 0x0107
     }
 }
 
 # ALU writeback: XOR A clears A and sets only Z
 expect {
     g = after_step(GameBoy.init(rom_with([0xAF])))
-    g.reg.read8(Accumulator) == 0x00 and g.reg.read8(Status) == 0b1000_0000
+    g.cpu.reg.read8(Accumulator) == 0x00 and g.cpu.reg.read8(Status) == 0b1000_0000
 }
 
 # CB path: SET 7, A then BIT 7, A
 expect {
     g = after_step(after_step(GameBoy.init(rom_with([0xCB, 0xFF, 0xCB, 0x7F]))))
-    g.reg.read8(Accumulator).bitwise_and(0x80) == 0x80 and Status.check(Zero, g.reg.read8(Status)) == Bool.False
+    g.cpu.reg.read8(Accumulator).bitwise_and(0x80) == 0x80 and Status.check(Zero, g.cpu.reg.read8(Status)) == Bool.False
 }
 
 # Interrupt dispatch: PC pushed, vector 0x40 taken, IME and IF bit cleared, 20 cycles
 expect {
     gb0 = GameBoy.init(rom_with([0x00]))
-    gb1 = { ..gb0, ime: Bool.True, bus: gb0.bus.write(0xFFFF, 0x01).poke(0xFF0F, 0x01) }
+    gb1 = { ..gb0, cpu: { ..gb0.cpu, ime: Bool.True }, bus: gb0.bus.write(0xFFFF, 0x01).poke(0xFF0F, 0x01) }
     match gb1.step() {
         (g, c) =>
             c == 20
-            and g.reg.read16(ProgramCounter) == 0x0040
-            and g.ime == Bool.False
+            and g.cpu.reg.read16(ProgramCounter) == 0x0040
+            and g.cpu.ime == Bool.False
             and g.bus.read(0xFF0F).bitwise_and(0x01) == 0x00
             and g.bus.read(0xFFFD) == 0x01
             and g.bus.read(0xFFFC) == 0x00
@@ -743,7 +340,7 @@ expect {
     gb1 = { ..gb0, bus: gb0.bus.write(0xFFFF, 0x01).poke(0xFF0F, 0x01) }
     g2 = after_step(after_step(gb1)) # EI, then NOP still executes
     g3 = after_step(g2) # now the interrupt dispatches
-    g2.reg.read16(ProgramCounter) == 0x0102 and g3.reg.read16(ProgramCounter) == 0x0040
+    g2.cpu.reg.read16(ProgramCounter) == 0x0102 and g3.cpu.reg.read16(ProgramCounter) == 0x0040
 }
 
 # HALT wakes without IME: resumes after HALT, no vector taken
@@ -754,17 +351,17 @@ expect {
     g1 = after_step(gb1) # halts
     g2 = after_step(g1) # nothing pending: stays halted
     g3 = after_step({ ..g2, bus: g2.bus.poke(0xFF0F, 0x01) }) # wakes, runs the LD
-    g1.halted == Bool.True
-    and g2.halted == Bool.True
-    and g3.reg.read8(Accumulator) == 0x07
-    and g3.reg.read16(ProgramCounter) == 0x0103
-    and g3.ime == Bool.False
+    g1.cpu.halted == Bool.True
+    and g2.cpu.halted == Bool.True
+    and g3.cpu.reg.read8(Accumulator) == 0x07
+    and g3.cpu.reg.read16(ProgramCounter) == 0x0103
+    and g3.cpu.ime == Bool.False
 }
 
 # Stack round-trip: PUSH BC / POP DE
 expect {
     g = after_step(after_step(GameBoy.init(rom_with([0xC5, 0xD1]))))
-    g.reg.read16(DE) == g.reg.read16(BC) and g.reg.read16(StackPointer) == 0xFFFE
+    g.cpu.reg.read16(DE) == g.cpu.reg.read16(BC) and g.cpu.reg.read16(StackPointer) == 0xFFFE
 }
 
 # CALL pushes the return address; RET comes back
@@ -773,7 +370,7 @@ expect {
     code = [0xCD, 0x10, 0x01].concat(List.repeat(0x00, 13)).concat([0xC9])
     g1 = after_step(GameBoy.init(rom_with(code)))
     g2 = after_step(g1)
-    g1.reg.read16(ProgramCounter) == 0x0110 and g2.reg.read16(ProgramCounter) == 0x0103
+    g1.cpu.reg.read16(ProgramCounter) == 0x0110 and g2.cpu.reg.read16(ProgramCounter) == 0x0103
 }
 
 # Frame stepping: returns at VBlank entry with a full framebuffer of shades
@@ -798,7 +395,7 @@ expect {
 expect {
     gb0 = GameBoy.init(rom_with([0x00, 0x18, 0xFE])).set_breakpoint(0x0101)
     match gb0.run_until(GameBoy.no_input({})) {
-        (gb, BreakpointHit) => gb.reg.read16(ProgramCounter) == 0x0101
+        (gb, BreakpointHit) => gb.cpu.reg.read16(ProgramCounter) == 0x0101
         (_, FrameReady) => Bool.False
     }
 }
@@ -951,7 +548,7 @@ expect {
     m2 = m1.set(0xFF0F, 0x1F) ?? m1 # IF all set
     s = { ..flat_state(m2), ime: Bool.True }
     match GameBoy.from_raw(s).step_instruction() {
-        (g, cycles) => g.raw().pc == 0x0101 and cycles == 4 and g.ime
+        (g, cycles) => g.raw().pc == 0x0101 and cycles == 4 and g.cpu.ime
     }
 }
 

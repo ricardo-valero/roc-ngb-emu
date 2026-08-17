@@ -35,7 +35,7 @@ at_time = |gb, now| gb.run_frame({ ..GameBoy.no_input({}), now: now })
 check_ram_roundtrip : {} -> Bool
 check_ram_roundtrip = |_| {
 	rom = battery_rom({})
-	gb = GameBoy.init(rom).mem_write(0x0000, 0x0A).mem_write(0xA000, 0x5A).mem_write(0xA123, 0xC3)
+	gb = GameBoy.init(rom).poke(0x0000, 0x0A).poke(0xA000, 0x5A).poke(0xA123, 0xC3)
 	sav = gb.battery()
 	again = GameBoy.init(rom).with_battery(sav).battery()
 	sav.len() == 8192 and (sav.get(0) ?? 0x00) == 0x5A and sav == again
@@ -45,7 +45,7 @@ check_ram_roundtrip = |_| {
 check_rtc_roundtrip : {} -> Bool
 check_rtc_roundtrip = |_| {
 	rom = rtc_rom({})
-	gb = at_time(GameBoy.init(rom), 1000).mem_write(0x0000, 0x0A).mem_write(0xA000, 0x42)
+	gb = at_time(GameBoy.init(rom), 1000).poke(0x0000, 0x0A).poke(0xA000, 0x42)
 	sav = gb.battery()
 	again = GameBoy.init(rom).with_battery(sav).battery()
 	sav.len() == 32816 and sav == again # 32 KiB + 48
@@ -75,11 +75,11 @@ check_catchup = |_| {
 	sav = at_time(GameBoy.init(rom), 1000).battery()
 	gb =
 		at_time(GameBoy.init(rom).with_battery(sav), 1090)
-			.mem_write(0x6000, 0x00)
-			.mem_write(0x6000, 0x01)
-			.mem_write(0x0000, 0x0A)
-			.mem_write(0x4000, 0x08)
-	gb.peek(0xA000) == 30 and gb.mem_write(0x4000, 0x09).peek(0xA000) == 1
+			.poke(0x6000, 0x00)
+			.poke(0x6000, 0x01)
+			.poke(0x0000, 0x0A)
+			.poke(0x4000, 0x08)
+	gb.peek(0xA000) == 30 and gb.poke(0x4000, 0x09).peek(0xA000) == 1
 }
 
 # A halted clock (dh bit 6) stays put across save, load, and elapsed time
@@ -88,17 +88,17 @@ check_halt = |_| {
 	rom = rtc_rom({})
 	sav =
 		at_time(GameBoy.init(rom), 1000)
-			.mem_write(0x0000, 0x0A)
-			.mem_write(0x4000, 0x0C)
-			.mem_write(0xA000, 0x40)
+			.poke(0x0000, 0x0A)
+			.poke(0x4000, 0x0C)
+			.poke(0xA000, 0x40)
 			.battery()
 	gb =
 		at_time(GameBoy.init(rom).with_battery(sav), 999999)
-			.mem_write(0x6000, 0x00)
-			.mem_write(0x6000, 0x01)
-			.mem_write(0x0000, 0x0A)
-			.mem_write(0x4000, 0x08)
-	gb.peek(0xA000) == 0x00 and gb.mem_write(0x4000, 0x0C).peek(0xA000) == 0x40
+			.poke(0x6000, 0x00)
+			.poke(0x6000, 0x01)
+			.poke(0x0000, 0x0A)
+			.poke(0x4000, 0x08)
+	gb.peek(0xA000) == 0x00 and gb.poke(0x4000, 0x0C).peek(0xA000) == 0x40
 }
 
 # 512 elapsed days overflow the 9-bit day counter into the sticky carry
@@ -108,20 +108,20 @@ check_day_carry = |_| {
 	sav = at_time(GameBoy.init(rom), 1000).battery()
 	gb =
 		at_time(GameBoy.init(rom).with_battery(sav), 44237800) # 1000 + 512 days
-			.mem_write(0x6000, 0x00)
-			.mem_write(0x6000, 0x01)
-			.mem_write(0x0000, 0x0A)
-			.mem_write(0x4000, 0x0C)
-	gb.peek(0xA000) == 0x80 and gb.mem_write(0x4000, 0x0B).peek(0xA000) == 0x00
+			.poke(0x6000, 0x00)
+			.poke(0x6000, 0x01)
+			.poke(0x0000, 0x0A)
+			.poke(0x4000, 0x0C)
+	gb.peek(0xA000) == 0x80 and gb.poke(0x4000, 0x0B).peek(0xA000) == 0x00
 }
 
 # The save-event counter bumps on disable-after-write, once, and not on
 # idle enable/disable cycles
 check_save_signal : {} -> Bool
 check_save_signal = |_| {
-	gb = GameBoy.init(battery_rom({})).mem_write(0x0000, 0x0A).mem_write(0xA000, 0x01)
-	flushed = gb.mem_write(0x0000, 0x00)
-	idle = flushed.mem_write(0x0000, 0x0A).mem_write(0x0000, 0x00)
+	gb = GameBoy.init(battery_rom({})).poke(0x0000, 0x0A).poke(0xA000, 0x01)
+	flushed = gb.poke(0x0000, 0x00)
+	idle = flushed.poke(0x0000, 0x0A).poke(0x0000, 0x00)
 	gb.save_events() == 0 and flushed.save_events() == 1 and idle.save_events() == 1
 }
 

@@ -7,6 +7,7 @@ import GameBoy
 import Bit
 import Cartridge
 import Constant
+import Cpu
 import Cpu/Alu
 import Cpu/Instruction
 import Cpu/Register
