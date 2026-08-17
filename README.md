@@ -27,6 +27,33 @@ The repo splits into `package/` (the emulator core, pure Roc),
 list, passlist/golden, and packaging), and `example/` (headless dev tools
 that exercise the core).
 
+## Hardware map
+
+Two views, deliberately different: the module tree encodes *ownership*
+(who holds which state and who may touch it), while the physical SoC
+boundary lives in `GameBoy.roc` — the composition module **is** the
+DMG-CPU chip, the one place the core, bus, PPU, APU, and interrupt
+dispatch are wired together and scheduled. Every other module is one
+block of the console:
+
+| Console block | Module | Physically |
+|---|---|---|
+| SM83 CPU core | `Cpu/` (registers, ALU, instruction set); fetch–decode–execute loop in `GameBoy.roc` | on the DMG-CPU die |
+| Address/data bus, WRAM/VRAM/HRAM, I/O register page | `Bus.roc` | decoder on the die; WRAM and VRAM are external 8 KiB SRAM chips, HRAM/OAM on-die |
+| Divider/timer (DIV, TIMA) | `Timer.roc` | on the DMG-CPU die |
+| Joypad port (P1/JOYP matrix) | `Joypad.roc` | on the DMG-CPU die (button matrix on the front board) |
+| Pixel unit (PPU) | `Ppu.roc` | on the DMG-CPU die, driving the LCD |
+| Sound unit (APU) | `Apu.roc` | on the DMG-CPU die, driving the amp/speaker |
+| Cartridge: ROM, MBC banking, save RAM, RTC, battery | `Cartridge.roc` + `Cartridge/Header.roc` | on the cartridge PCB |
+| LCD, speaker, buttons, `.sav` storage, wall clock | `app/ray.roc`, `app/web/` | not hardware — the host |
+
+A few bytes deliberately live "in the wrong place" by the physical view,
+because the bus is how the CPU reaches them and one owner per list keeps
+Roc's in-place mutation safe: OAM (physically inside the PPU) and the
+peripheral register bytes (DIV/TIMA/TMA/TAC, P1's select bits — physically
+timer/joypad state) sit in `Bus.roc`'s flat `mem`, with `Timer.roc` and
+`Joypad.roc` doing the arithmetic on values the bus hands them.
+
 Play a ROM in a native window — the ray app reads the ROM from disk at
 **startup** (first argument, else `rom/play.gbc`), so swapping games
 needs no rebuild. The platform is the local
