@@ -4,6 +4,8 @@ import Cartridge/Header
 import GameBoy
 
 # Non-exposed modules, imported so `roc test package/main.roc` runs their expects
+import Apu/Channel
+import Apu/Register as ApuRegister
 import Bit
 import Cartridge
 import Constant

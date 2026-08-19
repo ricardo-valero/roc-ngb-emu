@@ -1,27 +1,14 @@
 # DMG audio processing unit: four channels driven by a 512 Hz frame
 # sequencer, ticked from CPU-step cycles like the timer and PPU. Registers
-# live in the bus (with read-back masks applied there); this record holds the
-# hidden state: timers, counters, LFSR, and the generated sample buffer.
+# live in the bus (with read-back masks applied there; their *formats*
+# decode in Apu/Register), and the hidden per-channel state lives in
+# Apu/Channel. This module is the bus-coupled orchestration: events,
+# triggers, the frame sequencer, sweep writeback, and the mixer.
 # https://gbdev.io/pandocs/Audio_details.html
 
+import /Apu/Channel
+import /Apu/Register
 import /Bus
-
-# One record shape serves all four channels; unused fields stay idle
-Channel : {
-    enabled : Bool,
-    length : U16,
-    timer : U64, # cycles until the next waveform step
-    duty_pos : U8,
-    volume : U8,
-    env_timer : U8,
-    sweep_timer : U8,
-    sweep_shadow : U16,
-    sweep_enabled : Bool,
-    wave_pos : U8,
-    lfsr : U16,
-    len_en : Bool, # last seen NRx4 length-enable, for edge-clock detection
-    sweep_neg_used : Bool, # a sweep calc used negate mode since the last trigger
-}
 
 Apu := {
     ch1 : Channel,
@@ -33,30 +20,13 @@ Apu := {
     fs_step : U8,
     sample_acc : U64, # fractional accumulator: emit when >= 4194304
 }.{
-    blank : {} -> Channel
-    blank = |_| {
-        enabled: Bool.False,
-        length: 0,
-        timer: 8192,
-        duty_pos: 0,
-        volume: 0,
-        env_timer: 0,
-        sweep_timer: 0,
-        sweep_shadow: 0,
-        sweep_enabled: Bool.False,
-        wave_pos: 0,
-        lfsr: 0x7FFF,
-        len_en: Bool.False,
-        sweep_neg_used: Bool.False,
-    }
-
     init : {} -> Apu
     init = |_| {
         apu = {
-            ch1: blank({}),
-            ch2: blank({}),
-            ch3: blank({}),
-            ch4: blank({}),
+            ch1: Channel.blank({}),
+            ch2: Channel.blank({}),
+            ch3: Channel.blank({}),
+            ch4: Channel.blank({}),
             pending: 0,
             fs_timer: 0,
             fs_step: 7, # so the first step to fire is 0, as after power-on
@@ -110,10 +80,10 @@ Apu := {
 
         # waveform timers
         apu = { ..apu,
-            ch1: advance_pulse(apu.ch1, pulse_period(bus, 0xFF13, 0xFF14), cycles),
-            ch2: advance_pulse(apu.ch2, pulse_period(bus, 0xFF18, 0xFF19), cycles),
-            ch3: advance_wave(apu.ch3, wave_period(bus), cycles),
-            ch4: advance_noise(apu.ch4, noise_period(bus), noise_width7(bus), cycles),
+            ch1: apu.ch1.advance_pulse(pulse_period(bus, 0xFF13, 0xFF14), cycles),
+            ch2: apu.ch2.advance_pulse(pulse_period(bus, 0xFF18, 0xFF19), cycles),
+            ch3: apu.ch3.advance_wave(wave_period(bus), cycles),
+            ch4: apu.ch4.advance_noise(noise_period(bus), Register.noise_width7(bus.read_raw(0xFF22)), cycles),
         }
 
         # frame sequencer
@@ -122,19 +92,20 @@ Apu := {
             fs = fs.minus(8192)
             step = apu.fs_step.plus(1).bitwise_and(0x07)
             apu = { ..apu, fs_step: step }
-            if step.bitwise_and(0x01) == 0x00 {
+            clocks = sequencer_clocks(step)
+            if clocks.length {
                 apu = clock_lengths(apu, bus)
             } else {
                 {}
             }
-            if step == 2 or step == 6 {
+            if clocks.sweep {
                 s = clock_sweep(apu, bus)
                 apu = s.apu
                 bus = s.bus
             } else {
                 {}
             }
-            if step == 7 {
+            if clocks.envelope {
                 apu = clock_envelopes(apu, bus)
             } else {
                 {}
@@ -181,41 +152,27 @@ Apu := {
     handle_event = |apu, bus, event|
         match event {
             0x10 => { ..apu, ch1: nr10_gate(apu.ch1, bus) }
-            0x11 => { ..apu, ch1: { ..apu.ch1, length: len64(bus, 0xFF11) } }
-            0x12 => { ..apu, ch1: dac_gate(apu.ch1, dac_on(bus, 0xFF12)) }
+            0x11 => { ..apu, ch1: { ..apu.ch1, length: Register.len64(bus.read_raw(0xFF11)) } }
+            0x12 => { ..apu, ch1: apu.ch1.dac_gate(Register.dac_on(bus.read_raw(0xFF12))) }
             0x14 => { ..apu, ch1: nrx4(apu, apu.ch1, bus, 0xFF14, 64, Ch1) }
-            0x16 => { ..apu, ch2: { ..apu.ch2, length: len64(bus, 0xFF16) } }
-            0x17 => { ..apu, ch2: dac_gate(apu.ch2, dac_on(bus, 0xFF17)) }
+            0x16 => { ..apu, ch2: { ..apu.ch2, length: Register.len64(bus.read_raw(0xFF16)) } }
+            0x17 => { ..apu, ch2: apu.ch2.dac_gate(Register.dac_on(bus.read_raw(0xFF17))) }
             0x19 => { ..apu, ch2: nrx4(apu, apu.ch2, bus, 0xFF19, 64, Ch2) }
-            0x1A => { ..apu, ch3: dac_gate(apu.ch3, wave_dac_on(bus)) }
-            0x1B => { ..apu, ch3: { ..apu.ch3, length: U16.minus(256, bus.read_raw(0xFF1B).to_u16()) } }
+            0x1A => { ..apu, ch3: apu.ch3.dac_gate(Register.wave_dac_on(bus.read_raw(0xFF1A))) }
+            0x1B => { ..apu, ch3: { ..apu.ch3, length: Register.len256(bus.read_raw(0xFF1B)) } }
             0x1E => { ..apu, ch3: nrx4(apu, apu.ch3, bus, 0xFF1E, 256, Wave) }
-            0x20 => { ..apu, ch4: { ..apu.ch4, length: len64(bus, 0xFF20) } }
-            0x21 => { ..apu, ch4: dac_gate(apu.ch4, dac_on(bus, 0xFF21)) }
+            0x20 => { ..apu, ch4: { ..apu.ch4, length: Register.len64(bus.read_raw(0xFF20)) } }
+            0x21 => { ..apu, ch4: apu.ch4.dac_gate(Register.dac_on(bus.read_raw(0xFF21))) }
             0x23 => { ..apu, ch4: nrx4(apu, apu.ch4, bus, 0xFF23, 64, Noise) }
             0xF0 => power_off(apu, bus)
             0xF1 => power_on(apu)
             _ => apu
         }
 
-    dac_on : Bus, U16 -> Bool
-    dac_on = |bus, nrx2| bus.read_raw(nrx2).bitwise_and(0xF8) != 0x00
-
-    wave_dac_on : Bus -> Bool
-    wave_dac_on = |bus| bus.read_raw(0xFF1A).bitwise_and(0x80) != 0x00
-
-    # NRx1: the length counter loads at write time, playing or not
-    len64 : Bus, U16 -> U16
-    len64 = |bus, nrx1| U16.minus(64, bus.read_raw(nrx1).bitwise_and(0x3F).to_u16())
-
-    # NRx2/NR30: turning the DAC off silences the channel immediately
-    dac_gate : Channel, Bool -> Channel
-    dac_gate = |ch, on| if on { ch } else { { ..ch, enabled: Bool.False } }
-
     # NR10: clearing negate after a negate-mode calculation kills CH1
     nr10_gate : Channel, Bus -> Channel
     nr10_gate = |ch, bus|
-        if bus.read_raw(0xFF10).bitwise_and(0x08) == 0x00 and ch.sweep_neg_used {
+        if Register.sweep(bus.read_raw(0xFF10)).negate == Bool.False and ch.sweep_neg_used {
             { ..ch, enabled: Bool.False }
         } else {
             ch
@@ -232,8 +189,8 @@ Apu := {
     nrx4 : Apu, Channel, Bus, U16, U16, [Ch1, Ch2, Wave, Noise] -> Channel
     nrx4 = |apu, ch0, bus, addr, max_len, which| {
         v = bus.read_raw(addr)
-        new_en = v.bitwise_and(0x40) != 0x00
-        trigger = v.bitwise_and(0x80) != 0x00
+        new_en = Register.length_enabled(v)
+        trigger = Register.trigger(v)
         fh = first_half(apu)
         edge =
             if new_en and ch0.len_en == Bool.False and fh and ch0.length > 0 {
@@ -270,13 +227,13 @@ Apu := {
     power_off : Apu, Bus -> Apu
     power_off = |apu, bus|
         if bus.is_cgb() {
-            { ..apu, ch1: blank({}), ch2: blank({}), ch3: blank({}), ch4: blank({}) }
+            { ..apu, ch1: Channel.blank({}), ch2: Channel.blank({}), ch3: Channel.blank({}), ch4: Channel.blank({}) }
         } else {
             { ..apu,
-                ch1: { ..blank({}), length: apu.ch1.length },
-                ch2: { ..blank({}), length: apu.ch2.length },
-                ch3: { ..blank({}), length: apu.ch3.length },
-                ch4: { ..blank({}), length: apu.ch4.length },
+                ch1: { ..Channel.blank({}), length: apu.ch1.length },
+                ch2: { ..Channel.blank({}), length: apu.ch2.length },
+                ch3: { ..Channel.blank({}), length: apu.ch3.length },
+                ch4: { ..Channel.blank({}), length: apu.ch4.length },
             }
         }
 
@@ -292,12 +249,12 @@ Apu := {
 
     trigger_pulse : Channel, Bus, U16, U64 -> Channel
     trigger_pulse = |ch, bus, nrx2, period| {
-        env = bus.read_raw(nrx2)
+        env = Register.envelope(bus.read_raw(nrx2))
         { ..ch,
-            enabled: dac_on(bus, nrx2),
+            enabled: Register.dac_on(bus.read_raw(nrx2)),
             timer: period,
-            volume: env.shr_zf_wrap(4),
-            env_timer: env.bitwise_and(0x07),
+            volume: env.volume,
+            env_timer: env.period,
         }
     }
 
@@ -307,20 +264,18 @@ Apu := {
     trigger_ch1 : Channel, Bus -> Channel
     trigger_ch1 = |ch0, bus| {
         ch = trigger_pulse(ch0, bus, 0xFF12, pulse_period(bus, 0xFF13, 0xFF14))
-        nr10 = bus.read_raw(0xFF10)
-        period = nr10.shr_zf_wrap(4).bitwise_and(0x07)
-        shift = nr10.bitwise_and(0x07)
+        sw = Register.sweep(bus.read_raw(0xFF10))
         shadow = raw_frequency(bus, 0xFF13, 0xFF14)
         armed = { ..ch,
             sweep_shadow: shadow,
-            sweep_timer: if period == 0 { 8 } else { period },
-            sweep_enabled: period != 0 or shift != 0,
+            sweep_timer: if sw.period == 0 { 8 } else { sw.period },
+            sweep_enabled: sw.period != 0 or sw.shift != 0,
             sweep_neg_used: Bool.False,
         }
         # immediate calculation when a shift is set (counts for the negate quirk)
-        if shift != 0 {
-            calc = { ..armed, sweep_neg_used: nr10.bitwise_and(0x08) != 0x00 }
-            if sweep_next(calc.sweep_shadow, nr10) > 2047 {
+        if sw.shift != 0 {
+            calc = { ..armed, sweep_neg_used: sw.negate }
+            if Register.sweep_next(calc.sweep_shadow, sw) > 2047 {
                 { ..calc, enabled: Bool.False }
             } else {
                 calc
@@ -332,179 +287,89 @@ Apu := {
 
     trigger_wave : Channel, Bus -> Channel
     trigger_wave = |ch, bus| { ..ch,
-        enabled: wave_dac_on(bus),
+        enabled: Register.wave_dac_on(bus.read_raw(0xFF1A)),
         timer: wave_period(bus),
         wave_pos: 0,
     }
 
     trigger_noise : Channel, Bus -> Channel
     trigger_noise = |ch, bus| {
-        env = bus.read_raw(0xFF21)
+        env = Register.envelope(bus.read_raw(0xFF21))
         { ..ch,
-            enabled: dac_on(bus, 0xFF21),
+            enabled: Register.dac_on(bus.read_raw(0xFF21)),
             timer: noise_period(bus),
-            volume: env.shr_zf_wrap(4),
-            env_timer: env.bitwise_and(0x07),
+            volume: env.volume,
+            env_timer: env.period,
             lfsr: 0x7FFF,
         }
     }
 
-    # --- waveform timing ---
+    # --- register map: address + format compositions (the formats live in
+    # Apu/Register; the addresses are this module's knowledge) ---
 
     raw_frequency : Bus, U16, U16 -> U16
-    raw_frequency = |bus, lo, hi|
-        bus.read_raw(hi).bitwise_and(0x07).to_u16().shl_wrap(8).bitwise_or(bus.read_raw(lo).to_u16())
+    raw_frequency = |bus, lo, hi| Register.frequency(bus.read_raw(lo), bus.read_raw(hi))
 
     pulse_period : Bus, U16, U16 -> U64
-    pulse_period = |bus, lo, hi|
-        U16.minus(2048, raw_frequency(bus, lo, hi)).to_u64().shl_wrap(2)
+    pulse_period = |bus, lo, hi| Register.pulse_period(raw_frequency(bus, lo, hi))
 
     wave_period : Bus -> U64
-    wave_period = |bus|
-        U16.minus(2048, raw_frequency(bus, 0xFF1D, 0xFF1E)).to_u64().shl_wrap(1)
+    wave_period = |bus| Register.wave_period(raw_frequency(bus, 0xFF1D, 0xFF1E))
 
     noise_period : Bus -> U64
-    noise_period = |bus| {
-        nr43 = bus.read_raw(0xFF22)
-        divisor =
-            match nr43.bitwise_and(0x07) {
-                0 => 8
-                d => d.to_u64().shl_wrap(4)
-            }
-        divisor.shl_wrap(nr43.shr_zf_wrap(4))
-    }
-
-    noise_width7 : Bus -> Bool
-    noise_width7 = |bus| bus.read_raw(0xFF22).bitwise_and(0x08) != 0x00
-
-    advance_pulse : Channel, U64, U64 -> Channel
-    advance_pulse = |ch0, period, cycles| {
-        var ch = ch0
-        var rem = cycles
-        while rem >= ch.timer {
-            rem = rem.minus(ch.timer)
-            ch = { ..ch, timer: period, duty_pos: ch.duty_pos.plus(1).bitwise_and(0x07) }
-        }
-        { ..ch, timer: ch.timer.minus(rem) }
-    }
-
-    advance_wave : Channel, U64, U64 -> Channel
-    advance_wave = |ch0, period, cycles| {
-        var ch = ch0
-        var rem = cycles
-        while rem >= ch.timer {
-            rem = rem.minus(ch.timer)
-            ch = { ..ch, timer: period, wave_pos: ch.wave_pos.plus(1).bitwise_and(0x1F) }
-        }
-        { ..ch, timer: ch.timer.minus(rem) }
-    }
-
-    advance_noise : Channel, U64, Bool, U64 -> Channel
-    advance_noise = |ch0, period, width7, cycles| {
-        var ch = ch0
-        var rem = cycles
-        while rem >= ch.timer {
-            rem = rem.minus(ch.timer)
-            ch = { ..ch, timer: period, lfsr: clock_lfsr(ch.lfsr, width7) }
-        }
-        { ..ch, timer: ch.timer.minus(rem) }
-    }
-
-    clock_lfsr : U16, Bool -> U16
-    clock_lfsr = |lfsr, width7| {
-        bit = lfsr.bitwise_xor(lfsr.shr_zf_wrap(1)).bitwise_and(0x0001)
-        next = lfsr.shr_zf_wrap(1).bitwise_or(bit.shl_wrap(14))
-        if width7 {
-            next.bitwise_and(0xFFBF).bitwise_or(bit.shl_wrap(6))
-        } else {
-            next
-        }
-    }
+    noise_period = |bus| Register.noise_period(bus.read_raw(0xFF22))
 
     # --- frame sequencer clocks ---
 
-    length_enabled : Bus, U16 -> Bool
-    length_enabled = |bus, addr| bus.read_raw(addr).bitwise_and(0x40) != 0x00
-
-    clock_length : Channel, Bool -> Channel
-    clock_length = |ch, enable|
-        if enable and ch.length > 0 {
-            remaining = ch.length.minus(1)
-            if remaining == 0 {
-                { ..ch, length: 0, enabled: Bool.False }
-            } else {
-                { ..ch, length: remaining }
-            }
-        } else {
-            ch
+    # The 512 Hz sequencer's schedule, transcribed from the Pandocs table
+    sequencer_clocks : U8 -> { length : Bool, sweep : Bool, envelope : Bool }
+    sequencer_clocks = |step|
+        match step {
+            0 => { length: Bool.True, sweep: Bool.False, envelope: Bool.False }
+            1 => { length: Bool.False, sweep: Bool.False, envelope: Bool.False }
+            2 => { length: Bool.True, sweep: Bool.True, envelope: Bool.False }
+            3 => { length: Bool.False, sweep: Bool.False, envelope: Bool.False }
+            4 => { length: Bool.True, sweep: Bool.False, envelope: Bool.False }
+            5 => { length: Bool.False, sweep: Bool.False, envelope: Bool.False }
+            6 => { length: Bool.True, sweep: Bool.True, envelope: Bool.False }
+            _ => { length: Bool.False, sweep: Bool.False, envelope: Bool.True }
         }
 
     clock_lengths : Apu, Bus -> Apu
     clock_lengths = |apu, bus| { ..apu,
-        ch1: clock_length(apu.ch1, length_enabled(bus, 0xFF14)),
-        ch2: clock_length(apu.ch2, length_enabled(bus, 0xFF19)),
-        ch3: clock_length(apu.ch3, length_enabled(bus, 0xFF1E)),
-        ch4: clock_length(apu.ch4, length_enabled(bus, 0xFF23)),
-    }
-
-    clock_envelope : Channel, U8 -> Channel
-    clock_envelope = |ch, nrx2| {
-        period = nrx2.bitwise_and(0x07)
-        if period == 0 or ch.enabled == Bool.False {
-            ch
-        } else if ch.env_timer <= 1 {
-            increase = nrx2.bitwise_and(0x08) != 0x00
-            volume =
-                if increase {
-                    if ch.volume < 15 { ch.volume.plus(1) } else { ch.volume }
-                } else {
-                    if ch.volume > 0 { ch.volume.minus(1) } else { ch.volume }
-                }
-            { ..ch, env_timer: period, volume: volume }
-        } else {
-            { ..ch, env_timer: ch.env_timer.minus(1) }
-        }
+        ch1: apu.ch1.clock_length(Register.length_enabled(bus.read_raw(0xFF14))),
+        ch2: apu.ch2.clock_length(Register.length_enabled(bus.read_raw(0xFF19))),
+        ch3: apu.ch3.clock_length(Register.length_enabled(bus.read_raw(0xFF1E))),
+        ch4: apu.ch4.clock_length(Register.length_enabled(bus.read_raw(0xFF23))),
     }
 
     clock_envelopes : Apu, Bus -> Apu
     clock_envelopes = |apu, bus| { ..apu,
-        ch1: clock_envelope(apu.ch1, bus.read_raw(0xFF12)),
-        ch2: clock_envelope(apu.ch2, bus.read_raw(0xFF17)),
-        ch4: clock_envelope(apu.ch4, bus.read_raw(0xFF21)),
-    }
-
-    sweep_next : U16, U8 -> U16
-    sweep_next = |shadow, nr10| {
-        delta = shadow.shr_zf_wrap(nr10.bitwise_and(0x07))
-        if nr10.bitwise_and(0x08) != 0x00 {
-            shadow.minus_wrap(delta)
-        } else {
-            shadow.plus_wrap(delta)
-        }
+        ch1: apu.ch1.clock_envelope(Register.envelope(bus.read_raw(0xFF12))),
+        ch2: apu.ch2.clock_envelope(Register.envelope(bus.read_raw(0xFF17))),
+        ch4: apu.ch4.clock_envelope(Register.envelope(bus.read_raw(0xFF21))),
     }
 
     clock_sweep : Apu, Bus -> { apu : Apu, bus : Bus }
     clock_sweep = |apu, bus| {
         ch = apu.ch1
-        nr10 = bus.read_raw(0xFF10)
-        period = nr10.shr_zf_wrap(4).bitwise_and(0x07)
-        shift = nr10.bitwise_and(0x07)
+        sw = Register.sweep(bus.read_raw(0xFF10))
         if ch.sweep_timer > 1 {
             { apu: { ..apu, ch1: { ..ch, sweep_timer: ch.sweep_timer.minus(1) } }, bus: bus }
         } else {
-            reloaded = { ..ch, sweep_timer: if period == 0 { 8 } else { period } }
-            if reloaded.sweep_enabled and period != 0 {
+            reloaded = { ..ch, sweep_timer: if sw.period == 0 { 8 } else { sw.period } }
+            if reloaded.sweep_enabled and sw.period != 0 {
                 # any calculation in negate mode arms the NR10 negate-clear quirk
-                calc = { ..reloaded, sweep_neg_used: reloaded.sweep_neg_used or nr10.bitwise_and(0x08) != 0x00 }
-                next = sweep_next(calc.sweep_shadow, nr10)
+                calc = { ..reloaded, sweep_neg_used: reloaded.sweep_neg_used or sw.negate }
+                next = Register.sweep_next(calc.sweep_shadow, sw)
                 if next > 2047 {
                     { apu: { ..apu, ch1: { ..calc, enabled: Bool.False } }, bus: bus }
-                } else if shift != 0 {
+                } else if sw.shift != 0 {
                     bus2 = bus
                         .poke(0xFF13, next.to_u8_wrap())
                         .poke(0xFF14, bus.read_raw(0xFF14).bitwise_and(0xF8).bitwise_or(next.shr_zf_wrap(8).to_u8_wrap()))
                     updated = { ..calc, sweep_shadow: next }
-                    if sweep_next(next, nr10) > 2047 {
+                    if Register.sweep_next(next, sw) > 2047 {
                         { apu: { ..apu, ch1: { ..updated, enabled: Bool.False } }, bus: bus2 }
                     } else {
                         { apu: { ..apu, ch1: updated }, bus: bus2 }
@@ -520,29 +385,6 @@ Apu := {
 
     # --- output ---
 
-    # Duty patterns as bit masks read at duty_pos (LSB first):
-    # 12.5%, 25%, 50%, 75%
-    pulse_wave : U8, U8 -> Bool
-    pulse_wave = |duty, pos| {
-        pattern : U8
-        pattern =
-            match duty {
-                0 => 0x01
-                1 => 0x03
-                2 => 0x0F
-                _ => 0xFC
-            }
-        pattern.bitwise_and(U8.shl_wrap(1, pos)) != 0x00
-    }
-
-    pulse_out : Channel, U8 -> U8
-    pulse_out = |ch, nrx1|
-        if ch.enabled and pulse_wave(nrx1.shr_zf_wrap(6), ch.duty_pos) {
-            ch.volume
-        } else {
-            0
-        }
-
     wave_out : Channel, Bus -> U8
     wave_out = |ch, bus|
         if ch.enabled {
@@ -553,20 +395,10 @@ Apu := {
                 } else {
                     byte.bitwise_and(0x0F)
                 }
-            match bus.read_raw(0xFF1C).shr_zf_wrap(5).bitwise_and(0x03) {
-                0 => 0
-                1 => nibble
-                2 => nibble.shr_zf_wrap(1)
-                _ => nibble.shr_zf_wrap(2)
+            match Register.wave_volume(bus.read_raw(0xFF1C)) {
+                Mute => 0
+                Shift(s) => nibble.shr_zf_wrap(s)
             }
-        } else {
-            0
-        }
-
-    noise_out : Channel -> U8
-    noise_out = |ch|
-        if ch.enabled and ch.lfsr.bitwise_and(0x0001) == 0x0000 {
-            ch.volume
         } else {
             0
         }
@@ -582,23 +414,21 @@ Apu := {
 
     mix : Apu, Bus -> { left : F32, right : F32 }
     mix = |apu, bus| {
-        o1 = dac(pulse_out(apu.ch1, bus.read_raw(0xFF11)), apu.ch1.enabled)
-        o2 = dac(pulse_out(apu.ch2, bus.read_raw(0xFF16)), apu.ch2.enabled)
+        o1 = dac(apu.ch1.pulse_out(Register.duty(bus.read_raw(0xFF11))), apu.ch1.enabled)
+        o2 = dac(apu.ch2.pulse_out(Register.duty(bus.read_raw(0xFF16))), apu.ch2.enabled)
         o3 = dac(wave_out(apu.ch3, bus), apu.ch3.enabled)
-        o4 = dac(noise_out(apu.ch4), apu.ch4.enabled)
+        o4 = dac(apu.ch4.noise_out(), apu.ch4.enabled)
         nr51 = bus.read_raw(0xFF25)
-        nr50 = bus.read_raw(0xFF24)
-        left_vol = (nr50.shr_zf_wrap(4).bitwise_and(0x07).to_f32() + 1.0) / 8.0
-        right_vol = (nr50.bitwise_and(0x07).to_f32() + 1.0) / 8.0
+        master = Register.master_volume(bus.read_raw(0xFF24))
         {
-            left: (route(o1, nr51, 4) + route(o2, nr51, 5) + route(o3, nr51, 6) + route(o4, nr51, 7)) * left_vol,
-            right: (route(o1, nr51, 0) + route(o2, nr51, 1) + route(o3, nr51, 2) + route(o4, nr51, 3)) * right_vol,
+            left: (route(o1, nr51, 4) + route(o2, nr51, 5) + route(o3, nr51, 6) + route(o4, nr51, 7)) * master.left,
+            right: (route(o1, nr51, 0) + route(o2, nr51, 1) + route(o3, nr51, 2) + route(o4, nr51, 3)) * master.right,
         }
     }
 
     route : F32, U8, U8 -> F32
     route = |sample, nr51, bit|
-        if nr51.bitwise_and(U8.shl_wrap(1, bit)) != 0x00 {
+        if Register.routed(nr51, bit) {
             sample
         } else {
             0.0
@@ -641,10 +471,16 @@ expect {
     after.apu.ch2.duty_pos == 4
 }
 
-# Duty ratios: 50% pattern is high for 4 of 8 steps; 12.5% for 1
+# The frame-sequencer schedule: lengths on even steps, sweep on 2 and 6,
+# envelope only on 7
 expect {
-    highs = |duty| [0, 1, 2, 3, 4, 5, 6, 7].fold(0, |n, pos| if Apu.pulse_wave(duty, pos) { n.plus(1) } else { n })
-    highs(0) == 1 and highs(1) == 2 and highs(2) == 4 and highs(3) == 6
+    [0, 1, 2, 3, 4, 5, 6, 7].fold(Bool.True, |ok, s| {
+        c = Apu.sequencer_clocks(s)
+        ok
+        and c.length == (s.bitwise_and(0x01) == 0x00)
+        and c.sweep == (s == 2 or s == 6)
+        and c.envelope == (s == 7)
+    })
 }
 
 # Sweep overflow disables CH1 at trigger
@@ -662,12 +498,6 @@ expect {
     r = f.apu.tick(m, 4)
     r.apu.ch1.enabled == Bool.True
 }
-
-# LFSR: documented first steps from all-ones, and 7-bit mode feedback
-expect Apu.clock_lfsr(0x7FFF, Bool.False) == 0x3FFF
-expect Apu.clock_lfsr(0x3FFF, Bool.False) == 0x1FFF
-expect Apu.clock_lfsr(0x0001, Bool.False) == 0x4000
-expect Apu.clock_lfsr(0x7FFF, Bool.True) == 0x3FBF
 
 # Wave channel follows wave RAM nibbles
 expect {
