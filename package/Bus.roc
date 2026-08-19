@@ -38,7 +38,6 @@ Bus := {
     opri : U8, # object priority mode (used by the CGB render path later)
     now : U64, # wall clock (UNIX seconds), data not effect; frontends refresh it per frame
     layout : [Mapped, Flat], # Flat: raw 64 KiB, no region semantics (single-step harness only)
-    trace : [NoTrace, Trace(List({ addr : U16, val : U8, dir : [Read, Write] }))], # per-access record, harness only
 }.{
     init : List(U8) -> Bus
     init = |rom| {
@@ -71,7 +70,6 @@ Bus := {
             sample_count: 0,
             now: 0,
             layout: Mapped,
-            trace: NoTrace,
         }
         # DMG post-boot IO state. LY starts at 0; the PPU advances it for real.
         [
@@ -104,28 +102,12 @@ Bus := {
 
     # Flat 64 KiB for the single-step harness: no banking, no region
     # semantics, every address a plain byte. The vectors assume exactly
-    # this, and the access trace is on from birth.
+    # this. (The access trace is CPU-owned — GameBoy.from_raw arms it.)
     flat : List(U8) -> Bus
     flat = |image| {
         sized = image.sublist({ start: 0, len: 0x10000 })
         mem = sized.concat(List.repeat(0, 0x10000.U64.minus(sized.len())))
-        { ..init([]), mem: mem, layout: Flat, trace: Trace([]) }
-    }
-
-    # Append one access to the trace; free when tracing is off
-    trace_access : Bus, U16, U8, [Read, Write] -> Bus
-    trace_access = |bus, addr, val, dir|
-        match bus.trace {
-            NoTrace => bus
-            Trace(list) => { ..bus, trace: Trace(list.append({ addr: addr, val: val, dir: dir })) }
-        }
-
-    # Read that records itself in the trace — the CPU paths in GameBoy
-    # thread the returned Bus so access order is honest
-    read_traced : Bus, U16 -> { bus : Bus, value : U8 }
-    read_traced = |bus, addr| {
-        value = bus.read(addr)
-        { bus: bus.trace_access(addr, value, Read), value: value }
+        { ..init([]), mem: mem, layout: Flat }
     }
 
     read : Bus, U16 -> U8

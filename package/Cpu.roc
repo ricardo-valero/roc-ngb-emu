@@ -14,19 +14,29 @@ import /Cpu/Register/Status
 # The state threaded through one instruction: the CPU's fields flat next
 # to the bus, so the execution code reads and updates them exactly as it
 # did on the GameBoy record. `step` packs and unpacks at the boundary.
-St : { reg : Register, ime : Bool, halted : Bool, ei_pending : Bool, bus : Bus }
+St : { reg : Register, ime : Bool, halted : Bool, ei_pending : Bool, trace : [NoTrace, Trace(List({ addr : U16, val : U8, dir : [Read, Write] }))], bus : Bus }
 
-Cpu := { reg : Register, ime : Bool, halted : Bool, ei_pending : Bool }.{
+Cpu := {
+    reg : Register,
+    ime : Bool,
+    halted : Bool,
+    ei_pending : Bool,
+    # Transcript of the ordered memory accesses this CPU's instructions
+    # perform (single-step harness only; NoTrace everywhere else).
+    # CPU-owned because only the CPU can tell its own architectural
+    # accesses from a frontend peek or a PPU fetch on the same bus.
+    trace : [NoTrace, Trace(List({ addr : U16, val : U8, dir : [Read, Write] }))],
+}.{
     # DMG post-boot state (no boot ROM)
     init : {} -> Cpu
-    init = |_| { reg: Register.init({}), ime: Bool.False, halted: Bool.False, ei_pending: Bool.False }
+    init = |_| { reg: Register.init({}), ime: Bool.False, halted: Bool.False, ei_pending: Bool.False, trace: NoTrace }
 
     to_st : Cpu, Bus -> St
-    to_st = |cpu, bus| { reg: cpu.reg, ime: cpu.ime, halted: cpu.halted, ei_pending: cpu.ei_pending, bus: bus }
+    to_st = |cpu, bus| { reg: cpu.reg, ime: cpu.ime, halted: cpu.halted, ei_pending: cpu.ei_pending, trace: cpu.trace, bus: bus }
 
     of_st : St, U64 -> { cpu : Cpu, bus : Bus, cycles : U64 }
     of_st = |st, cycles|
-        { cpu: { reg: st.reg, ime: st.ime, halted: st.halted, ei_pending: st.ei_pending }, bus: st.bus, cycles: cycles }
+        { cpu: { reg: st.reg, ime: st.ime, halted: st.halted, ei_pending: st.ei_pending, trace: st.trace }, bus: st.bus, cycles: cycles }
 
     step : Cpu, Bus -> { cpu : Cpu, bus : Bus, cycles : U64 }
     step = |cpu, bus| {
@@ -101,19 +111,24 @@ Cpu := { reg : Register, ime : Bool, halted : Bool, ei_pending : Bool }.{
     sign_extend = |e8|
         if e8 >= 0x80 { e8.to_u16().bitwise_or(0xFF00) } else { e8.to_u16() }
 
+    # The CPU's two doors to memory: every load and store in every opcode
+    # goes through these, which is what keeps the trace a faithful
+    # program-order transcript. Tracing off (every non-harness machine)
+    # is the plain mapped access.
     mem_write : St, U16, U8 -> St
-    mem_write = |st, addr, value| { ..st, bus: st.bus.write(addr, value).trace_access(addr, value, Write) }
+    mem_write = |st, addr, value|
+        match st.trace {
+            NoTrace => { ..st, bus: st.bus.write(addr, value) }
+            Trace(list) => { ..st, bus: st.bus.write(addr, value), trace: Trace(list.append({ addr: addr, val: value, dir: Write })) }
+        }
 
-    # CPU-path read, threading the Bus so the access trace stays in
-    # program order. With tracing off (every non-harness machine) this is
-    # the plain pure read.
     mem_read : St, U16 -> { st : St, value : U8 }
     mem_read = |st, addr|
-        match st.bus.trace {
+        match st.trace {
             NoTrace => { st: st, value: st.bus.read(addr) }
-            Trace(_) => {
-                r = st.bus.read_traced(addr)
-                { st: { ..st, bus: r.bus }, value: r.value }
+            Trace(list) => {
+                value = st.bus.read(addr)
+                { st: { ..st, trace: Trace(list.append({ addr: addr, val: value, dir: Read })) }, value: value }
             }
         }
 

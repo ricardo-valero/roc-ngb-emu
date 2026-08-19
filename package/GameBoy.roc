@@ -212,6 +212,7 @@ GameBoy := {
                 ime: s.ime,
                 halted: Bool.False,
                 ei_pending: Bool.False,
+                trace: Trace([]),
             },
             bus: Bus.flat(s.mem),
             ppu: Ppu.init({}),
@@ -250,7 +251,7 @@ GameBoy := {
     # unless the machine was built by from_raw)
     access_trace : GameBoy -> List({ addr : U16, val : U8, dir : [Read, Write] })
     access_trace = |gb|
-        match gb.bus.trace {
+        match gb.cpu.trace {
             Trace(list) => list
             NoTrace => []
         }
