@@ -449,12 +449,7 @@ expect {
 	with_flag = base.set(0x0143, 0x80) ?? base
 	prog = [0x3E, 0x01, 0xE0, 0x4D, 0x10, 0x00]
 	rom = prog.fold({ i: 0x0100.U64, r: with_flag }, |acc, byte| { i: acc.i + 1, r: acc.r.set(acc.i, byte) ?? acc.r }).r
-	var gb = GameBoy.init(rom)
-	var n = 0
-	while n < 220 {
-		gb = after_step(gb)
-		n = n + 1
-	}
+	gb = Iter.fold(U8.to(1, 220), GameBoy.init(rom), |g, _| after_step(g))
 	gb.peek(0xFF4D) == 0xFE and gb.peek(0xFF44) == 1
 }
 
