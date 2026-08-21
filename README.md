@@ -185,8 +185,8 @@ roc test package/main.roc     # run all inline expects
 Development uses the new (Zig-based) Roc compiler, pinned via the Nix flake.
 The pre-migration code (2024 Roc syntax and toolchain) lives on the `legacy`
 branch. Frontends: [roc-ray](https://github.com/lukewilliamboswell/roc-ray)
-for the native window (see `spike/rocray-hello/SPIKE.md` for toolchain
-pairing notes) and [roc-web](https://github.com/ricardo-valero/roc-web) for
+for the native window and
+[roc-web](https://github.com/ricardo-valero/roc-web) for
 the browser — each platform release pairs with a Roc nightly; bump platform
 URLs and the flake pin together.
 

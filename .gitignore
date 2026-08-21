@@ -1,5 +1,4 @@
 rom/
-spike/rocray-hello/main
 .direnv/
 /ray
 /main
