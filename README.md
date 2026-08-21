@@ -36,18 +36,17 @@ labeled by the module that plays it — lives at
 Two views, deliberately different: the module tree encodes *ownership*
 (who holds which state and who may touch it), while the physical SoC
 boundary lives in `GameBoy.roc` — the composition module **is** the
-DMG-CPU chip, the one place the core, bus, PPU, APU, and interrupt
-dispatch are wired together and scheduled. Every other module is one
-block of the console:
+DMG-CPU chip, the one place the CPU core, bus, PPU, and APU are wired
+together and scheduled. Every other module is one block of the console:
 
 | Console block | Module | Physically |
 |---|---|---|
-| SM83 CPU core | `Cpu/` (registers, ALU, instruction set); fetch–decode–execute loop in `GameBoy.roc` | on the DMG-CPU die |
+| SM83 CPU core | `Cpu.roc` (state, step, interrupt dispatch) + `Cpu/` (registers, ALU, instruction set) | on the DMG-CPU die |
 | Address/data bus, WRAM/VRAM/HRAM, I/O register page | `Bus.roc` | decoder on the die; WRAM and VRAM are external 8 KiB SRAM chips, HRAM/OAM on-die |
 | Divider/timer (DIV, TIMA) | `Timer.roc` | on the DMG-CPU die |
 | Joypad port (P1/JOYP matrix) | `Joypad.roc` | on the DMG-CPU die (button matrix on the front board) |
 | Pixel unit (PPU) | `Ppu.roc` | on the DMG-CPU die, driving the LCD |
-| Sound unit (APU) | `Apu.roc` | on the DMG-CPU die, driving the amp/speaker |
+| Sound unit (APU) | `Apu.roc` + `Apu/Channel` (hidden channel state), `Apu/Register` (NRxx formats) | on the DMG-CPU die, driving the amp/speaker |
 | Cartridge: ROM, MBC banking, save RAM, RTC, battery | `Cartridge.roc` + `Cartridge/Header.roc` | on the cartridge PCB |
 | LCD, speaker, buttons, `.sav` storage, wall clock | `app/ray.roc`, `app/web/` | not hardware — the host |
 

@@ -188,7 +188,7 @@
     <rect x="72" y="104" width="32" height="12" rx="2" class="tag"/>
     <text x="88" y="113" class="tagt" text-anchor="middle">CPU</text>
     <text x="136" y="140" class="name" text-anchor="middle">SM83 core</text>
-    <text x="136" y="156" class="sub" text-anchor="middle">Cpu/* · GameBoy.roc</text>
+    <text x="136" y="156" class="sub" text-anchor="middle">Cpu.roc · Cpu/*</text>
 
     <rect x="232" y="96" width="144" height="72" rx="6" class="mask"/>
     <rect x="232" y="96" width="144" height="72" rx="6" class="nodebg"/>
@@ -202,8 +202,9 @@
     <rect x="400" y="96" width="144" height="72" rx="6" class="nodebg"/>
     <rect x="408" y="104" width="32" height="12" rx="2" class="tag"/>
     <text x="424" y="113" class="tagt" text-anchor="middle">APU</text>
-    <text x="472" y="140" class="name" text-anchor="middle">Sound unit</text>
-    <text x="472" y="156" class="sub" text-anchor="middle">Apu.roc · 4ch + wave</text>
+    <text x="472" y="136" class="name" text-anchor="middle">Sound unit</text>
+    <text x="472" y="151" class="sub" text-anchor="middle">Apu.roc · 4ch + wave</text>
+    <text x="472" y="163" class="sub" text-anchor="middle">Apu/{Channel,Register}</text>
 
     <rect x="568" y="96" width="144" height="72" rx="6" class="mask"/>
     <rect x="568" y="96" width="144" height="72" rx="6" class="nodebg"/>
@@ -264,10 +265,10 @@
       <p class="eyebrow">Chip → module</p>
       <div class="card-header"><span class="card-dot coral"></span><h3>Who plays what</h3></div>
       <ul>
-        <li>SM83 core → <code>Cpu/Register</code>, <code>Cpu/Alu</code>, <code>Cpu/Instruction</code>; the fetch–decode–execute loop lives in <code>GameBoy.roc</code></li>
+        <li>SM83 core → <code>Cpu.roc</code> (state, step, interrupt dispatch) over <code>Cpu/Instruction</code>, <code>Cpu/Alu</code>, <code>Cpu/Register</code>; <code>GameBoy.roc</code> is the SoC composition only</li>
         <li>Address/data bus + WRAM/VRAM/HRAM + the I/O page → <code>Bus.roc</code></li>
         <li>Timer → <code>Timer.roc</code> · joypad → <code>Joypad.roc</code> (pure units; the bus owns their register bytes)</li>
-        <li>PPU → <code>Ppu.roc</code> · APU → <code>Apu.roc</code></li>
+        <li>PPU → <code>Ppu.roc</code> · APU → <code>Apu.roc</code>, with hidden channel state in <code>Apu/Channel</code> and NRxx field decode in <code>Apu/Register</code></li>
         <li>Cartridge (ROM, MBC banking, save RAM, RTC) → <code>Cartridge.roc</code> + <code>Cartridge/Header.roc</code></li>
         <li>LCD, speaker, buttons, battery → <code>app/ray.roc</code> and <code>app/web/</code></li>
       </ul>
@@ -277,7 +278,7 @@
       <div class="card-header"><span class="card-dot slate"></span><h3>Why one bus explains it</h3></div>
       <ul>
         <li>Every component except the CPU is memory-mapped: the CPU configures the PPU, APU and timers by writing registers on the same bus it fetches code from</li>
-        <li>CPU registers are the exception — internal to the core, unreachable from the bus, which is why they get their own module</li>
+        <li>CPU registers are the exception — internal to the core, unreachable from the bus, which is why the CPU owns them; the APU's channel internals (timers, LFSR, envelopes) are hidden the same way in <code>Apu/Channel</code></li>
         <li>The PPU owns a second port into VRAM/OAM — during pixel transfer (mode 3) it locks the CPU out</li>
         <li>Interrupts (VBlank, STAT, timer, serial, joypad) are the only other cross-wires into the CPU</li>
         <li>The cartridge is not passive: its MBC chip decodes ROM writes as bank-switch commands</li>
