@@ -1,9 +1,11 @@
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    # Pinned rev = roc nightly-2026-08-15-f70f90a (roc-overlay PR #8 head); keep in sync with
-    # roc-web, roc-nes-emu, and roc-ray's .roc-version.
-    roc-overlay.url = "github:roc-lang/roc-overlay/eef7b03b0e49795f655ef8953397811450502989";
+    # SPIKE BRANCH (nightly-iter): pinned to roc-overlay PR #8 head as of
+    # 2026-08-20 — the latest nightly, intentionally ahead of the platform
+    # pairing (roc-web, roc-nes-emu, roc-ray's .roc-version). Do not merge
+    # this pin to main without paired platform releases.
+    roc-overlay.url = "github:roc-lang/roc-overlay/c4408620942a1d5fe397c044ce0619feb84750de";
     roc-overlay.inputs.nixpkgs.follows = "nixpkgs";
   };
   outputs = {

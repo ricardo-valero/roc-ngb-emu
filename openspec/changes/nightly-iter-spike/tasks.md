@@ -2,16 +2,16 @@
 
 ## 1. Branch and toolchain
 
-- [ ] 1.1 Create branch `nightly-iter` from current `main`
-- [ ] 1.2 Find the latest roc nightly (roc-overlay HEAD or latest paired
+- [x] 1.1 Create branch `nightly-iter` from current `main`
+- [x] 1.2 Find the latest roc nightly (roc-overlay HEAD or latest paired
       rev) and bump `flake.nix`'s roc-overlay pin on the branch; update
       the pin comment to say this branch intentionally breaks the
       platform pairing
-- [ ] 1.3 Tier 1 gate: `roc check package/main.roc` and
+- [x] 1.3 Tier 1 gate: `roc check package/main.roc` and
       `roc test package/main.roc` on the new nightly — triage and record
       any breakage in `report.md` (breakage is a finding, not a failure;
       if the package won't compile at all, write the report and park)
-- [ ] 1.4 Probe Tier 2: try `roc check` on `check/single-step/main.roc`,
+- [x] 1.4 Probe Tier 2: try `roc check` on `check/single-step/main.roc`,
       `check/run.roc`, `check/sound/main.roc`, `check/acid2/main.roc`,
       `check/battery/main.roc`; record which build and run — this
       determines the gate set for everything below

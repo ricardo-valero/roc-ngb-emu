@@ -289,26 +289,26 @@ prefixed = |byte| {
 	}
 }
 
-# Fold a predicate over all 256 byte values (no stdlib range dependency)
-count_bytes : U16, (U8 -> Bool) -> U16
-count_bytes = |from, pred|
-	if from > 0xFF {
-		0
-	} else {
-		rest = count_bytes(from.plus(1), pred)
-		if pred(from.to_u8_wrap()) {
-			rest.plus(1)
-		} else {
-			rest
-		}
-	}
+# Count the byte values in 0-255 satisfying a predicate
+count_bytes : (U8 -> Bool) -> U16
+count_bytes = |pred|
+	Iter.fold(
+		U8.to(0, 255),
+		0,
+		|n, b|
+			if pred(b) {
+				n.plus(1)
+			} else {
+				n
+			},
+	)
 
 # Exhaustive decode: no opcode is Unknown, exactly the 11 documented illegals
-expect count_bytes(0, |b| match Instruction.lookup(b) {
+expect count_bytes(|b| match Instruction.lookup(b) {
 	Unknown => Bool.True
 	_ => Bool.False
 }) == 0
-expect count_bytes(0, |b| match Instruction.lookup(b) {
+expect count_bytes(|b| match Instruction.lookup(b) {
 	Illegal => Bool.True
 	_ => Bool.False
 }) == 11
@@ -372,19 +372,19 @@ expect prefixed(0x3F) == ShiftLogical(Right, Direct8(Accumulator))
 expect prefixed(0x7E) == Bit(7, Indirect(HL))
 expect prefixed(0x80) == Reset(0, Direct8(B))
 expect prefixed(0xFF) == Set(7, Direct8(Accumulator))
-expect count_bytes(0, |b| match prefixed(b) {
+expect count_bytes(|b| match prefixed(b) {
 	Bit(_, _) => Bool.True
 	_ => Bool.False
 }) == 64
-expect count_bytes(0, |b| match prefixed(b) {
+expect count_bytes(|b| match prefixed(b) {
 	Set(_, _) => Bool.True
 	_ => Bool.False
 }) == 64
-expect count_bytes(0, |b| match prefixed(b) {
+expect count_bytes(|b| match prefixed(b) {
 	Reset(_, _) => Bool.True
 	_ => Bool.False
 }) == 64
-expect count_bytes(0, |b| match prefixed(b) {
+expect count_bytes(|b| match prefixed(b) {
 	Swap(_) => Bool.True
 	_ => Bool.False
 }) == 8
