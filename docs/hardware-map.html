@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Game Boy (DMG) — what's wired to what</title>
+<title>Game Boy (DMG/CGB) — what’s wired to what</title>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -126,13 +126,13 @@
 <body>
 <div class="frame">
   <p class="eyebrow">Architecture · roc-ngb-emu</p>
-  <h1>Game Boy (DMG) — what's wired to what</h1>
-  <p class="subtitle">The console is one SM83 core talking to everything over a single 16-bit address / 8-bit data bus. Each block is labeled with the <code>package/</code> module that plays that chip.</p>
+  <h1>Game Boy (DMG/CGB) — what’s wired to what</h1>
+  <p class="subtitle">The console is one SM83 core talking to everything over a single 16-bit address / 8-bit data bus. One diagram covers both models — the cartridge header's CGB flag (<code>0x0143</code>) selects DMG or CGB behavior at boot; the Color changes capacity, not wiring. Each block is labeled with the <code>package/</code> module that plays that chip.</p>
 
   <div class="diagram-wrap">
   <svg viewBox="0 0 1000 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="gb-block-title gb-block-desc">
-    <title id="gb-block-title">Game Boy DMG hardware block diagram mapped to roc-ngb-emu modules</title>
-    <desc id="gb-block-desc">The SM83 CPU, timer and joypad peripherals, APU and PPU sit inside the DMG-CPU system-on-chip and reach WRAM, VRAM and the cartridge through one shared address and data bus; the PPU also has a dedicated pixel-fetch port into VRAM, and the host frontend exchanges frames, PCM audio and button state with the console. Each block names the roc-ngb-emu module that implements it.</desc>
+    <title id="gb-block-title">Game Boy DMG/CGB hardware block diagram mapped to roc-ngb-emu modules</title>
+    <desc id="gb-block-desc">The SM83 CPU, timer and joypad peripherals, APU and PPU sit inside the system-on-chip and reach WRAM, VRAM and the cartridge through one shared address and data bus; the PPU also has a dedicated pixel-fetch port into VRAM, and the host frontend exchanges frames, PCM audio and button state with the console. The Color model keeps the same wiring and adds banked VRAM and WRAM, palette RAM, VRAM DMA, and a double-speed CPU clock. Each block names the roc-ngb-emu module that implements it.</desc>
     <defs>
       <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon class="m-ink" points="0 0, 8 3, 0 6"/></marker>
       <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon class="m-link" points="0 0, 8 3, 0 6"/></marker>
@@ -141,8 +141,8 @@
     <rect width="100%" height="100%" class="mask"/>
 
     <rect x="40" y="40" width="696" height="176" rx="8" class="zone"/>
-    <rect x="52" y="44" width="152" height="12" rx="2" class="mask"/>
-    <text x="56" y="53" class="zlbl">DMG-CPU SOC · GameBoy.roc</text>
+    <rect x="52" y="44" width="188" height="12" rx="2" class="mask"/>
+    <text x="56" y="53" class="zlbl">DMG-CPU / CPU-CGB SOC · GameBoy.roc</text>
 
     <rect x="40" y="408" width="696" height="120" rx="8" class="zone"/>
     <rect x="52" y="412" width="168" height="12" rx="2" class="mask"/>
@@ -282,6 +282,7 @@
         <li>The PPU owns a second port into VRAM/OAM — during pixel transfer (mode 3) it locks the CPU out</li>
         <li>Interrupts (VBlank, STAT, timer, serial, joypad) are the only other cross-wires into the CPU</li>
         <li>The cartridge is not passive: its MBC chip decodes ROM writes as bank-switch commands</li>
+        <li>The CGB changes capacity, not wiring: banked VRAM/WRAM, palette RAM, VRAM DMA, and KEY1 double speed — CPU and timers clock 2×, the PPU and APU stay real-time</li>
       </ul>
     </div>
     <div class="card">
@@ -297,7 +298,7 @@
     </div>
   </div>
 
-  <footer>ROC-NGB-EMU · DMG BLOCK DIAGRAM · SOURCE: PACKAGE/ MODULES + PAN DOCS</footer>
+  <footer>ROC-NGB-EMU · DMG/CGB BLOCK DIAGRAM · SOURCE: PACKAGE/ MODULES + PAN DOCS</footer>
 </div>
 </body>
 </html>

@@ -1,6 +1,6 @@
 # roc-ngb-emu
 
-A Game Boy (DMG) emulator written in [Roc](https://www.roc-lang.org). WIP!
+A Game Boy (DMG/CGB) emulator written in [Roc](https://www.roc-lang.org). WIP!
 
 **Status:** playable, with a sound core! The SM83 CPU passes all 12 Blargg
 `cpu_instrs` ROMs (including the combined MBC1 one), the PPU renders
@@ -36,8 +36,9 @@ labeled by the module that plays it — lives at
 Two views, deliberately different: the module tree encodes *ownership*
 (who holds which state and who may touch it), while the physical SoC
 boundary lives in `GameBoy.roc` — the composition module **is** the
-DMG-CPU chip, the one place the CPU core, bus, PPU, and APU are wired
-together and scheduled. Every other module is one block of the console:
+DMG-CPU chip (CPU CGB on the Color — same wiring, wider memories), the
+one place the CPU core, bus, PPU, and APU are wired together and
+scheduled. Every other module is one block of the console:
 
 | Console block | Module | Physically |
 |---|---|---|
