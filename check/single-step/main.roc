@@ -86,7 +86,7 @@ parse_digits = |b, i, acc, any|
 			} else {
 				Err(ParseError(i))
 			}
-	}
+		}
 
 # position after the closing quote of a string whose opening quote is at/after i0
 skip_string : List(U8), U64 -> Try(U64, [ParseError(U64)])
@@ -372,7 +372,19 @@ check_bool = |label, got, want|
 	if got == want {
 		""
 	} else {
-		"${label}: got ${if got { "1" } else { "0" }} want ${if want { "1" } else { "0" }}"
+		"${label}: got ${
+			if got {
+				"1"
+			} else {
+				"0"
+			}
+		} want ${
+			if want {
+				"1"
+			} else {
+				"0"
+			}
+		}"
 	}
 
 check_u64 : Str, U64, U64 -> Str
@@ -384,7 +396,13 @@ check_u64 = |label, got, want|
 	}
 
 access_str : Access -> Str
-access_str = |a| "(${a.addr.to_str()},${a.val.to_str()},${if a.w { "w" } else { "r" }})"
+access_str = |a| "(${a.addr.to_str()},${a.val.to_str()},${
+	if a.w {
+		"w"
+	} else {
+		"r"
+	}
+})"
 
 # first diverging access, or length mismatch, between got and want
 check_trace : List(Access), List(Access) -> Str
@@ -427,14 +445,16 @@ run_case = |case| {
 	done = GameBoy.from_raw(s).step_instruction()
 	(g, cycles) = done
 	r = g.raw()
-	got_trace = g.access_trace().map(|e| {
-		addr: e.addr,
-		val: e.val,
-		w: match e.dir {
-			Write => Bool.True
-			Read => Bool.False
+	got_trace = g.access_trace().map(
+		|e| {
+			addr: e.addr,
+			val: e.val,
+			w: match e.dir {
+				Write => Bool.True
+				Read => Bool.False
+			},
 		},
-	})
+	)
 	reg_checks = [
 		check_u16("pc", r.pc, case.final.pc),
 		check_u16("sp", r.sp, case.final.sp),
@@ -452,27 +472,39 @@ run_case = |case| {
 		check_trace(got_trace, case.accesses),
 	]
 	ram_checks = case.final.ram.map(|e| check_u8("ram[${e.addr.to_str()}]", r.mem.get(e.addr.to_u64()) ?? 0, e.val))
-	reg_checks.concat(ram_checks).fold("", |acc, msg| if msg == "" { acc } else if acc == "" { msg } else { "${acc}; ${msg}" })
+	reg_checks.concat(ram_checks).fold(
+		"",
+		|acc, msg| if msg == "" {
+			acc
+		} else if acc == "" {
+			msg
+		} else {
+			"${acc}; ${msg}"
+		},
+	)
 }
 
 FileStats : { pass : U64, fail : U64, detail : Str, idx : U64 }
 
 run_cases : List(Case) -> FileStats
 run_cases = |cases|
-	cases.fold({ pass: 0, fail: 0, detail: "", idx: 0 }, |acc, case| {
-		msg = run_case(case)
-		if msg == "" {
-			{ ..acc, pass: acc.pass.plus(1), idx: acc.idx.plus(1) }
-		} else {
-			detail =
-				if acc.fail < 5 {
-					"${acc.detail}\n    case ${acc.idx.to_str()}: ${msg}"
-				} else {
-					acc.detail
-				}
-			{ ..acc, fail: acc.fail.plus(1), detail: detail, idx: acc.idx.plus(1) }
-		}
-	})
+	cases.fold(
+		{ pass: 0, fail: 0, detail: "", idx: 0 },
+		|acc, case| {
+			msg = run_case(case)
+			if msg == "" {
+				{ ..acc, pass: acc.pass.plus(1), idx: acc.idx.plus(1) }
+			} else {
+				detail =
+					if acc.fail < 5 {
+						"${acc.detail}\n    case ${acc.idx.to_str()}: ${msg}"
+					} else {
+						acc.detail
+					}
+				{ ..acc, fail: acc.fail.plus(1), detail: detail, idx: acc.idx.plus(1) }
+			}
+		},
+	)
 
 # --- driver ---
 
@@ -554,11 +586,11 @@ expect {
 expect {
 	r = parse_cycles(" [[100,7,\"r-m\"],[100,7,\"---\"],[200,9,\"-wm\"]]".to_utf8(), 0)
 	r
-	== Ok({
-		i: 44,
-		m_cycles: 3,
-		accesses: [{ addr: 100, val: 7, w: Bool.False }, { addr: 200, val: 9, w: Bool.True }],
-	})
+		== Ok({
+			i: 44,
+			m_cycles: 3,
+			accesses: [{ addr: 100, val: 7, w: Bool.False }, { addr: 200, val: 9, w: Bool.True }],
+		})
 }
 expect {
 	r = parse_state("{\"pc\":1,\"sp\":2,\"ime\":1,\"ie\":1,\"ram\":[[3,4]]}".to_utf8(), 0)

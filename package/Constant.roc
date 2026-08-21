@@ -1,5 +1,5 @@
 Constant :: [].{
-    MemoryAddress : U16
+	MemoryAddress : U16
 
-    Range(a) : { start : [Before(a), At(a), After(a)], end : [Before(a), At(a), After(a), Length(a)] }
+	Range(a) : { start : [Before(a), At(a), After(a)], end : [Before(a), At(a), After(a), Length(a)] }
 }

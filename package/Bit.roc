@@ -1,39 +1,39 @@
 Bit := [B0, B1, B2, B3, B4, B5, B6, B7].{
-    mask : Bit -> U8
-    mask = |bit|
-        U8.shl_wrap(
-            1,
-            match bit {
-                B0 => 0 # 0x01
-                B1 => 1 # 0x02
-                B2 => 2 # 0x04
-                B3 => 3 # 0x08
-                B4 => 4 # 0x10
-                B5 => 5 # 0x20
-                B6 => 6 # 0x40
-                B7 => 7 # 0x80
-            },
-        )
+	mask : Bit -> U8
+	mask = |bit|
+		U8.shl_wrap(
+			1,
+			match bit {
+				B0 => 0 # 0x01
+				B1 => 1 # 0x02
+				B2 => 2 # 0x04
+				B3 => 3 # 0x08
+				B4 => 4 # 0x10
+				B5 => 5 # 0x20
+				B6 => 6 # 0x40
+				B7 => 7
+			},
+		)
 
-    # Set bit on byte
-    set : Bit, U8 -> U8
-    set = |bit, byte|
-        byte.bitwise_or(bit.mask())
+	# Set bit on byte
+	set : Bit, U8 -> U8
+	set = |bit, byte|
+		byte.bitwise_or(bit.mask())
 
-    # Reset bit on byte
-    clear : Bit, U8 -> U8
-    clear = |bit, byte|
-        byte.bitwise_and(bit.mask().bitwise_not())
+	# Reset bit on byte
+	clear : Bit, U8 -> U8
+	clear = |bit, byte|
+		byte.bitwise_and(bit.mask().bitwise_not())
 
-    # Toggle bit on byte
-    toggle : Bit, U8 -> U8
-    toggle = |bit, byte|
-        byte.bitwise_xor(bit.mask())
+	# Toggle bit on byte
+	toggle : Bit, U8 -> U8
+	toggle = |bit, byte|
+		byte.bitwise_xor(bit.mask())
 
-    # Check bit on byte
-    check : Bit, U8 -> Bool
-    check = |bit, byte|
-        byte.bitwise_and(bit.mask()) > 0
+	# Check bit on byte
+	check : Bit, U8 -> Bool
+	check = |bit, byte|
+		byte.bitwise_and(bit.mask()) > 0
 }
 
 expect Bit.mask(B0) == 0b0000_0001

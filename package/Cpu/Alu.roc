@@ -4,188 +4,241 @@ FlagDelta : U8 -> U8
 
 # Result byte and a delta to apply to the flags register
 Output : (U8, FlagDelta)
+
 Output16 : (U16, FlagDelta)
 
 test_flags = |(a, b)| (a, b(0))
 
 ## Arithmetic Logic Unit
 Alu :: [].{
-    inc : U8 -> Output
-    inc = |operand| {
-        result = operand.plus_wrap(1)
-        zero_flag = result == 0x00
-        half_carry_flag = operand.bitwise_and(0xF) == 0xF
-        (result, Status.modify(Value(zero_flag), Value(Bool.False), Value(half_carry_flag), Unchanged))
-    }
+	inc : U8 -> Output
+	inc = |operand| {
+		result = operand.plus_wrap(1)
+		zero_flag = result == 0x00
+		half_carry_flag = operand.bitwise_and(0xF) == 0xF
+		(result, Status.modify(Value(zero_flag), Value(Bool.False), Value(half_carry_flag), Unchanged))
+	}
 
-    dec : U8 -> Output
-    dec = |operand| {
-        result = operand.minus_wrap(1)
-        zero_flag = result == 0x00
-        half_carry_flag = operand.bitwise_and(0x0F) == 0x00
-        (result, Status.modify(Value(zero_flag), Value(Bool.True), Value(half_carry_flag), Unchanged))
-    }
+	dec : U8 -> Output
+	dec = |operand| {
+		result = operand.minus_wrap(1)
+		zero_flag = result == 0x00
+		half_carry_flag = operand.bitwise_and(0x0F) == 0x00
+		(result, Status.modify(Value(zero_flag), Value(Bool.True), Value(half_carry_flag), Unchanged))
+	}
 
-    add : U8, U8 -> Output
-    add = |a, b| adc(a, b, Bool.False)
+	add : U8, U8 -> Output
+	add = |a, b| adc(a, b, Bool.False)
 
-    # Half-carry comes from the 3-way nibble sum: carry-in participates,
-    # so it cannot be recovered from a pre-summed operand.
-    adc : U8, U8, Bool -> Output
-    adc = |a, b, carry_in| {
-        cin = if carry_in { 1 } else { 0 }
-        sum = a.to_u16().plus(b.to_u16()).plus(cin)
-        result = sum.to_u8_wrap()
-        zero_flag = result == 0x00
-        half_carry_flag = a.bitwise_and(0xF).to_u16().plus(b.bitwise_and(0xF).to_u16()).plus(cin) > 0xF
-        carry_flag = sum > 0xFF
-        (result, Status.modify(Value(zero_flag), Value(Bool.False), Value(half_carry_flag), Value(carry_flag)))
-    }
+	# Half-carry comes from the 3-way nibble sum: carry-in participates,
+	# so it cannot be recovered from a pre-summed operand.
+	adc : U8, U8, Bool -> Output
+	adc = |a, b, carry_in| {
+		cin = if carry_in {
+			1
+		} else {
+			0
+		}
+		sum = a.to_u16().plus(b.to_u16()).plus(cin)
+		result = sum.to_u8_wrap()
+		zero_flag = result == 0x00
+		half_carry_flag = a.bitwise_and(0xF).to_u16().plus(b.bitwise_and(0xF).to_u16()).plus(cin) > 0xF
+		carry_flag = sum > 0xFF
+		(result, Status.modify(Value(zero_flag), Value(Bool.False), Value(half_carry_flag), Value(carry_flag)))
+	}
 
-    sub : U8, U8 -> Output
-    sub = |a, b| sbc(a, b, Bool.False)
+	sub : U8, U8 -> Output
+	sub = |a, b| sbc(a, b, Bool.False)
 
-    sbc : U8, U8, Bool -> Output
-    sbc = |a, b, carry_in| {
-        cin = if carry_in { 1 } else { 0 }
-        subtrahend = b.to_u16().plus(cin)
-        result = a.to_u16().minus_wrap(subtrahend).to_u8_wrap()
-        zero_flag = result == 0x00
-        half_carry_flag = a.bitwise_and(0xF).to_u16() < b.bitwise_and(0xF).to_u16().plus(cin)
-        carry_flag = a.to_u16() < subtrahend
-        (result, Status.modify(Value(zero_flag), Value(Bool.True), Value(half_carry_flag), Value(carry_flag)))
-    }
+	sbc : U8, U8, Bool -> Output
+	sbc = |a, b, carry_in| {
+		cin = if carry_in {
+			1
+		} else {
+			0
+		}
+		subtrahend = b.to_u16().plus(cin)
+		result = a.to_u16().minus_wrap(subtrahend).to_u8_wrap()
+		zero_flag = result == 0x00
+		half_carry_flag = a.bitwise_and(0xF).to_u16() < b.bitwise_and(0xF).to_u16().plus(cin)
+		carry_flag = a.to_u16() < subtrahend
+		(result, Status.modify(Value(zero_flag), Value(Bool.True), Value(half_carry_flag), Value(carry_flag)))
+	}
 
-    # CP: same flags as SUB, accumulator untouched (caller discards the result byte)
-    compare : U8, U8 -> Output
-    compare = |a, b| sub(a, b)
+	# CP: same flags as SUB, accumulator untouched (caller discards the result byte)
+	compare : U8, U8 -> Output
+	compare = |a, b| sub(a, b)
 
-    and_a : U8, U8 -> Output
-    and_a = |a, b| {
-        result = a.bitwise_and(b)
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.True), Value(Bool.False)))
-    }
+	and_a : U8, U8 -> Output
+	and_a = |a, b| {
+		result = a.bitwise_and(b)
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.True), Value(Bool.False)))
+	}
 
-    or_a : U8, U8 -> Output
-    or_a = |a, b| {
-        result = a.bitwise_or(b)
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(Bool.False)))
-    }
+	or_a : U8, U8 -> Output
+	or_a = |a, b| {
+		result = a.bitwise_or(b)
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(Bool.False)))
+	}
 
-    xor_a : U8, U8 -> Output
-    xor_a = |a, b| {
-        result = a.bitwise_xor(b)
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(Bool.False)))
-    }
+	xor_a : U8, U8 -> Output
+	xor_a = |a, b| {
+		result = a.bitwise_xor(b)
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(Bool.False)))
+	}
 
-    complement : U8 -> Output
-    complement = |a|
-        (a.bitwise_not(), Status.modify(Unchanged, Value(Bool.True), Value(Bool.True), Unchanged))
+	complement : U8 -> Output
+	complement = |a|
+		(a.bitwise_not(), Status.modify(Unchanged, Value(Bool.True), Value(Bool.True), Unchanged))
 
-    # DAA is driven by the flags of the preceding ADD/SUB, not the value alone
-    daa : U8, Bool, Bool, Bool -> Output
-    daa = |a, subtract, half, carry|
-        if subtract {
-            low = if half { 0x06 } else { 0x00 }
-            adjust = if carry { low.bitwise_or(0x60) } else { low }
-            result = a.minus_wrap(adjust)
-            (result, Status.modify(Value(result == 0x00), Unchanged, Value(Bool.False), Value(carry)))
-        } else {
-            carry_out = carry or a > 0x99
-            high = if carry_out { 0x60 } else { 0x00 }
-            adjust = if half or a.bitwise_and(0x0F) > 0x09 { high.bitwise_or(0x06) } else { high }
-            result = a.plus_wrap(adjust)
-            (result, Status.modify(Value(result == 0x00), Unchanged, Value(Bool.False), Value(carry_out)))
-        }
+	# DAA is driven by the flags of the preceding ADD/SUB, not the value alone
+	daa : U8, Bool, Bool, Bool -> Output
+	daa = |a, subtract, half, carry|
+		if subtract {
+			low = if half {
+				0x06
+			} else {
+				0x00
+			}
+			adjust = if carry {
+				low.bitwise_or(0x60)
+			} else {
+				low
+			}
+			result = a.minus_wrap(adjust)
+			(result, Status.modify(Value(result == 0x00), Unchanged, Value(Bool.False), Value(carry)))
+		} else {
+			carry_out = carry or a > 0x99
+			high = if carry_out {
+				0x60
+			} else {
+				0x00
+			}
+			adjust = if half or a.bitwise_and(0x0F) > 0x09 {
+				high.bitwise_or(0x06)
+			} else {
+				high
+			}
+			result = a.plus_wrap(adjust)
+			(result, Status.modify(Value(result == 0x00), Unchanged, Value(Bool.False), Value(carry_out)))
+		}
 
-    add16 : U16, U16 -> Output16
-    add16 = |operand1, operand2| {
-        result = operand1.plus_wrap(operand2)
-        half_carry_flag = operand1.bitwise_and(0x0FFF).plus(operand2.bitwise_and(0x0FFF)) > 0x0FFF
-        carry_flag = operand1 > U16.minus(0xFFFF, operand2)
-        (result, Status.modify(Unchanged, Value(Bool.False), Value(half_carry_flag), Value(carry_flag)))
-    }
+	add16 : U16, U16 -> Output16
+	add16 = |operand1, operand2| {
+		result = operand1.plus_wrap(operand2)
+		half_carry_flag = operand1.bitwise_and(0x0FFF).plus(operand2.bitwise_and(0x0FFF)) > 0x0FFF
+		carry_flag = operand1 > U16.minus(0xFFFF, operand2)
+		(result, Status.modify(Unchanged, Value(Bool.False), Value(half_carry_flag), Value(carry_flag)))
+	}
 
-    # ADD SP, e8 / LD HL, SP+e8: operand is sign-extended, but H/C come from
-    # unsigned low-byte arithmetic and Z is always clear
-    add_sp : U16, U8 -> Output16
-    add_sp = |sp, e8| {
-        offset = e8.to_u16()
-        signed = if e8 >= 0x80 { offset.bitwise_or(0xFF00) } else { offset }
-        result = sp.plus_wrap(signed)
-        half_carry_flag = sp.bitwise_and(0xF).plus(offset.bitwise_and(0xF)) > 0xF
-        carry_flag = sp.bitwise_and(0xFF).plus(offset.bitwise_and(0xFF)) > 0xFF
-        (result, Status.modify(Value(Bool.False), Value(Bool.False), Value(half_carry_flag), Value(carry_flag)))
-    }
+	# ADD SP, e8 / LD HL, SP+e8: operand is sign-extended, but H/C come from
+	# unsigned low-byte arithmetic and Z is always clear
+	add_sp : U16, U8 -> Output16
+	add_sp = |sp, e8| {
+		offset = e8.to_u16()
+		signed = if e8 >= 0x80 {
+			offset.bitwise_or(0xFF00)
+		} else {
+			offset
+		}
+		result = sp.plus_wrap(signed)
+		half_carry_flag = sp.bitwise_and(0xF).plus(offset.bitwise_and(0xF)) > 0xF
+		carry_flag = sp.bitwise_and(0xFF).plus(offset.bitwise_and(0xFF)) > 0xFF
+		(result, Status.modify(Value(Bool.False), Value(Bool.False), Value(half_carry_flag), Value(carry_flag)))
+	}
 
-    # Rotates and shifts: Z from the result (the RLCA/RLA-family accumulator
-    # variants force Z=0 at the execute layer)
-    rlc : U8 -> Output
-    rlc = |v| {
-        carry = v.bitwise_and(0x80) != 0x00
-        result = v.shl_wrap(1).bitwise_or(if carry { 0x01 } else { 0x00 })
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
-    }
+	# Rotates and shifts: Z from the result (the RLCA/RLA-family accumulator
+	# variants force Z=0 at the execute layer)
+	rlc : U8 -> Output
+	rlc = |v| {
+		carry = v.bitwise_and(0x80) != 0x00
+		result = v.shl_wrap(1).bitwise_or(
+			if carry {
+				0x01
+			} else {
+				0x00
+			},
+		)
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
+	}
 
-    rrc : U8 -> Output
-    rrc = |v| {
-        carry = v.bitwise_and(0x01) != 0x00
-        result = v.shr_zf_wrap(1).bitwise_or(if carry { 0x80 } else { 0x00 })
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
-    }
+	rrc : U8 -> Output
+	rrc = |v| {
+		carry = v.bitwise_and(0x01) != 0x00
+		result = v.shr_zf_wrap(1).bitwise_or(
+			if carry {
+				0x80
+			} else {
+				0x00
+			},
+		)
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
+	}
 
-    rl : U8, Bool -> Output
-    rl = |v, carry_in| {
-        carry = v.bitwise_and(0x80) != 0x00
-        result = v.shl_wrap(1).bitwise_or(if carry_in { 0x01 } else { 0x00 })
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
-    }
+	rl : U8, Bool -> Output
+	rl = |v, carry_in| {
+		carry = v.bitwise_and(0x80) != 0x00
+		result = v.shl_wrap(1).bitwise_or(
+			if carry_in {
+				0x01
+			} else {
+				0x00
+			},
+		)
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
+	}
 
-    rr : U8, Bool -> Output
-    rr = |v, carry_in| {
-        carry = v.bitwise_and(0x01) != 0x00
-        result = v.shr_zf_wrap(1).bitwise_or(if carry_in { 0x80 } else { 0x00 })
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
-    }
+	rr : U8, Bool -> Output
+	rr = |v, carry_in| {
+		carry = v.bitwise_and(0x01) != 0x00
+		result = v.shr_zf_wrap(1).bitwise_or(
+			if carry_in {
+				0x80
+			} else {
+				0x00
+			},
+		)
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
+	}
 
-    sla : U8 -> Output
-    sla = |v| {
-        carry = v.bitwise_and(0x80) != 0x00
-        result = v.shl_wrap(1)
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
-    }
+	sla : U8 -> Output
+	sla = |v| {
+		carry = v.bitwise_and(0x80) != 0x00
+		result = v.shl_wrap(1)
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
+	}
 
-    sra : U8 -> Output
-    sra = |v| {
-        carry = v.bitwise_and(0x01) != 0x00
-        result = v.shr_zf_wrap(1).bitwise_or(v.bitwise_and(0x80))
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
-    }
+	sra : U8 -> Output
+	sra = |v| {
+		carry = v.bitwise_and(0x01) != 0x00
+		result = v.shr_zf_wrap(1).bitwise_or(v.bitwise_and(0x80))
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
+	}
 
-    srl : U8 -> Output
-    srl = |v| {
-        carry = v.bitwise_and(0x01) != 0x00
-        result = v.shr_zf_wrap(1)
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
-    }
+	srl : U8 -> Output
+	srl = |v| {
+		carry = v.bitwise_and(0x01) != 0x00
+		result = v.shr_zf_wrap(1)
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(carry)))
+	}
 
-    swap : U8 -> Output
-    swap = |v| {
-        result = v.shr_zf_wrap(4).bitwise_or(v.shl_wrap(4))
-        (result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(Bool.False)))
-    }
+	swap : U8 -> Output
+	swap = |v| {
+		result = v.shr_zf_wrap(4).bitwise_or(v.shl_wrap(4))
+		(result, Status.modify(Value(result == 0x00), Value(Bool.False), Value(Bool.False), Value(Bool.False)))
+	}
 
-    bit_test : U8, U8 -> FlagDelta
-    bit_test = |index, v| {
-        zero_flag = v.bitwise_and(U8.shl_wrap(1, index)) == 0x00
-        Status.modify(Value(zero_flag), Value(Bool.False), Value(Bool.True), Unchanged)
-    }
+	bit_test : U8, U8 -> FlagDelta
+	bit_test = |index, v| {
+		zero_flag = v.bitwise_and(U8.shl_wrap(1, index)) == 0x00
+		Status.modify(Value(zero_flag), Value(Bool.False), Value(Bool.True), Unchanged)
+	}
 
-    set_bit : U8, U8 -> U8
-    set_bit = |index, v| v.bitwise_or(U8.shl_wrap(1, index))
+	set_bit : U8, U8 -> U8
+	set_bit = |index, v| v.bitwise_or(U8.shl_wrap(1, index))
 
-    clear_bit : U8, U8 -> U8
-    clear_bit = |index, v| v.bitwise_and(U8.shl_wrap(1, index).bitwise_not())
+	clear_bit : U8, U8 -> U8
+	clear_bit = |index, v| v.bitwise_and(U8.shl_wrap(1, index).bitwise_not())
 }
 
 expect test_flags(Alu.inc(0)) == (1, 0b00000000)

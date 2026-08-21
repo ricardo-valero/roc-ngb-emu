@@ -33,7 +33,11 @@ is_skipped = |opcode| no_vector.fold(Bool.False, |acc, s| acc or s == opcode)
 
 hex2 : U64 -> Str
 hex2 = |n| {
-	digit = |d| if d < 10 { d.plus(48) } else { d.plus(87) } # '0'.. / 'a'..
+	digit = |d| if d < 10 {
+		d.plus(48)
+	} else {
+		d.plus(87)
+	} # '0'.. / 'a'..
 	hi = n.to_u8_wrap().shr_zf_wrap(4).to_u64()
 	lo = n.bitwise_and(15)
 	Str.from_utf8([digit(hi).to_u8_wrap(), digit(lo).to_u8_wrap()]) ?? "??"

@@ -53,14 +53,14 @@ init! = App.init(
 		rom_path = host.args!().get(0) ?? "rom/play.gbc"
 		rom = match host.read_bytes!(rom_path) {
 			Ok(bytes) => bytes
-			Err(_) => crash("no ROM at ${rom_path} — copy a Game Boy ROM there, or pass a path: ./ray game.gb")
+			Err(_) => crash ("no ROM at ${rom_path} — copy a Game Boy ROM there, or pass a path: ./ray game.gb")
 		}
 		screen = Assets.Texture.generate_color!({ width: 160, height: 144, color: Color.black })?
 		screen.set_filter!(Point)
 		screen.set_wrap!(Clamp)
 		speaker = match Audio.create_stream!({ sample_rate: 48000, channels: 2 }) {
 			Ok(stream) => stream
-			Err(_) => crash("could not open a 48 kHz stereo audio stream — is an output device available?")
+			Err(_) => crash ("could not open a 48 kHz stereo audio stream — is an output device available?")
 		}
 		# Battery save alongside the ROM; a missing or short file is a clean
 		# start, and with_battery no-ops for batteryless carts
