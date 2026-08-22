@@ -2,11 +2,10 @@
 # ROMs load at runtime: the page fetches play.gb by default; drop any .gb
 # file onto the page (or use the picker) to swap games — no rebuild.
 # Controls: arrows = d-pad, X = A, Z = B, Enter = Start, Backspace = Select.
-# NOTE: pre-release pairing — the battery/clock contract (load! taking sav
-# bytes, host.unix_time, push_battery!) is in the local roc-web checkout;
-# repoint at the release-bundle URL once v0.4.0 is cut and lib/ re-vendored.
+# The platform release pairs with the flake's roc nightly and the vendored
+# lib/ — bump all three together (roc-web v0.4.0 ↔ nightly-2026-08-20).
 app [Model, program] {
-	web: platform "../../../roc-web/platform/main.roc",
+	web: platform "https://github.com/ricardo-valero/roc-web/releases/download/v0.4.0/2TPZfBReC6hZB6YTx5Np7bBXb9r6aHcs71ezEYWRyqJk.tar.zst",
 	ngb: "../../package/main.roc",
 }
 
