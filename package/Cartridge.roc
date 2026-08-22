@@ -452,12 +452,11 @@ test_set_byte = |l, i, v| l.set(i, v) ?? l
 # 64-bank (1 MiB) image: first byte of each bank is the bank number
 test_rom : U8 -> List(U8)
 test_rom = |type_byte| {
-	var r = List.repeat(0x00, 0x4000 * 64)
-	var b = 0.U64
-	while b < 64 {
-		r = test_set_byte(r, b.shl_wrap(14), b.to_u8_wrap())
-		b = b.plus(1)
-	}
+	r = Iter.fold(
+		U64.to(0, 63),
+		List.repeat(0x00, 0x4000 * 64),
+		|acc, b| test_set_byte(acc, b.shl_wrap(14), b.to_u8_wrap()),
+	)
 	test_set_byte(r, 0x0147, type_byte)
 }
 

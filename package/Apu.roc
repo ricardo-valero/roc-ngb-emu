@@ -62,15 +62,8 @@ Apu := {
 	apply_events : Apu, Bus -> { apu : Apu, bus : Bus }
 	apply_events = |apu0, bus0| {
 		drained = bus0.take_apu_events()
-		events = drained.events
-		bus = drained.bus # last use of `drained`: the bus stays uniquely owned
-		var apu = apu0
-		var i = 0
-		while i < events.len() {
-			apu = handle_event(apu, bus, events.get(i) ?? 0xFF)
-			i = i.plus(1)
-		}
-		{ apu: apu, bus: bus }
+		bus = drained.bus # last use of `drained`'s bus: it stays uniquely owned
+		{ apu: drained.events.fold(apu0, |apu, event| handle_event(apu, bus, event)), bus: bus }
 	}
 
 	advance : Apu, Bus, U64 -> { apu : Apu, bus : Bus }

@@ -236,18 +236,19 @@ Ppu := {
 			8.U16
 		}
 		# OAM scan: first 10 sprites covering this line, in OAM order
-		var selected = List.repeat(0xFE00.U16, 0)
-		var i = 0.U16
-		while i < 40 {
-			base = U16.plus(0xFE00, i.shl_wrap(2))
-			sy = bus.read(base).to_u16()
-			if selected.len() < 10 and ly16.plus(16) >= sy and ly16.plus(16) < sy.plus(height) {
-				selected = selected.append(base)
-			} else {
-				{}
-			}
-			i = i.plus(1)
-		}
+		selected = Iter.fold(
+			U16.to(0, 39),
+			List.repeat(0xFE00.U16, 0),
+			|sel, i| {
+				base = U16.plus(0xFE00, i.shl_wrap(2))
+				sy = bus.read(base).to_u16()
+				if sel.len() < 10 and ly16.plus(16) >= sy and ly16.plus(16) < sy.plus(height) {
+					sel.append(base)
+				} else {
+					sel
+				}
+			},
+		)
 		var fb = fb0
 		var x = 0.U16
 		while x < 160 {

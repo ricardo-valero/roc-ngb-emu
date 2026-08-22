@@ -14,7 +14,7 @@ import /Cpu/Register/Status
 # The state threaded through one instruction: the CPU's fields flat next
 # to the bus, so the execution code reads and updates them exactly as it
 # did on the GameBoy record. `step` packs and unpacks at the boundary.
-St : { reg : Register, ime : Bool, halted : Bool, ei_pending : Bool, trace : [NoTrace, Trace(List({ addr : U16, val : U8, dir : [Read, Write] }))], bus : Bus }
+St : { reg : Register, ime : Bool, halted : Bool, ei_pending : Bool, trace : [NoTrace, Trace(List({ addr : U16, val : U8, dir : [Read, Write] }))], bus : Bus, }
 
 Cpu := {
 	reg : Register,
